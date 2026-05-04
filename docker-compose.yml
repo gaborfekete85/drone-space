@@ -1,0 +1,88 @@
+# Run with:    docker compose up --build
+#
+# Compose auto-loads `.env` at the project root for variable interpolation
+# (the `${...}` build-args below) AND `env_file:` injects it into the
+# frontend container at runtime — same file, both phases.
+#
+# Two services on a private network: the browser only talks to `frontend`
+# on :3000; `frontend` proxies /api/backend/* to `backend:8000` over the
+# compose network, so CORS never enters the picture and the backend stays
+# unexposed on the host.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: drone-db
+    environment:
+      POSTGRES_USER: drone
+      POSTGRES_PASSWORD: drone
+      POSTGRES_DB: drone
+    volumes:
+      - drone_pgdata:/var/lib/postgresql/data
+      # Postgres runs every .sql in this dir once on first init (when the
+      # data directory is empty). Used to create the drone_space schema.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    expose:
+      - "5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U drone -d drone" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: drone-backend
+    environment:
+      APP_DATA_ROOT: /app_data
+      DATABASE_URL: postgresql+psycopg://drone:drone@db:5432/drone
+      # Optional S3 mirror — empty bucket disables it. Credentials come from
+      # `.env` (or any standard boto3 source: shared config, IAM role, etc.).
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-drones-ch-store}
+      # Empty by default — keys live at <bucket>/<user_id>/<folder>/...
+      AWS_S3_PREFIX: ${AWS_S3_PREFIX:-}
+      AWS_REGION: ${AWS_REGION:-eu-central-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+    volumes:
+      - ./app_data:/app_data
+    expose:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* must be set at build time so Next inlines them into
+        # the client bundle. Compose interpolates these from `.env`.
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+        NEXT_PUBLIC_CLERK_SIGN_IN_URL: ${NEXT_PUBLIC_CLERK_SIGN_IN_URL:-/sign-in}
+        NEXT_PUBLIC_CLERK_SIGN_UP_URL: ${NEXT_PUBLIC_CLERK_SIGN_UP_URL:-/sign-up}
+        NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL: ${NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL:-/dashboard}
+        NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL: ${NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL:-/dashboard}
+        # Baked into routes-manifest.json at build time; matches the runtime
+        # value below so the proxy points at the compose `backend` service.
+        BACKEND_INTERNAL_URL: http://backend:8000
+    container_name: drone-frontend
+    env_file:
+      - .env
+    environment:
+      BACKEND_INTERNAL_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  drone_pgdata:

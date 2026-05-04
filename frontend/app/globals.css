@@ -1,0 +1,176 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 17, 24, 39;
+  --background-start-rgb: 248, 250, 252;
+  --background-end-rgb: 255, 255, 255;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+/* Light theme defaults — soft sky/slate gradient, mirrors the dark theme's vertical depth */
+html { color-scheme: light; }
+body {
+  color: #0f172a; /* slate-900 — readable on light surfaces */
+  background: linear-gradient(180deg, #f8fafc 0%, #eef6ff 60%, #dbeafe 100%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Dark theme: deep blue base, orange accents per component */
+html.dark { color-scheme: dark; }
+html.dark body {
+  color: #e2e8f0; /* slate-200 */
+  background: linear-gradient(180deg, #050a18 0%, #0a1224 60%, #0f1a32 100%);
+}
+
+/* Drone hero background — aerial photo with subtle dark overlay */
+.drone-bg {
+  background-image:
+    linear-gradient(135deg, rgba(8, 16, 40, 0.55), rgba(8, 16, 40, 0.7)),
+    url("https://images.unsplash.com/photo-1507608616759-54f48f0af0ee?auto=format&fit=crop&w=1920&q=80");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* ---------- Animated sign-in scenery ---------- */
+
+/* Background hero — drone-over-misty-forest photo from /public/bg.png,
+   with a gentle pan/zoom so the scene feels alive without cropping the drone. */
+.drone-bg-anim {
+  background-image: url("/bg.png");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-color: #11201a; /* dark forest fallback while image loads */
+  animation: fly-forward 16s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+@keyframes fly-forward {
+  0%   { transform: scale(1.05) translate(-4%, 2%); }
+  100% { transform: scale(1.28) translate(5%, -3%); }
+}
+
+/* Soft horizontal mist bands drifting in front of the forest */
+.mist-band {
+  position: absolute;
+  left: -20%;
+  right: -20%;
+  height: 18vh;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(245, 235, 215, 0.35),
+    transparent
+  );
+  filter: blur(12px);
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+.mist-band--top {
+  top: 30%;
+  animation: mist-drift 35s ease-in-out infinite alternate;
+}
+.mist-band--bottom {
+  top: 62%;
+  opacity: 0.7;
+  animation: mist-drift 50s ease-in-out infinite alternate-reverse;
+}
+@keyframes mist-drift {
+  0%   { transform: translateX(-6%) translateY(0); opacity: 0.55; }
+  50%  { transform: translateX(4%) translateY(-1%);  opacity: 0.8; }
+  100% { transform: translateX(-2%) translateY(1%);  opacity: 0.55; }
+}
+
+/* Soft drifting cloud glows for depth */
+.cloud {
+  position: absolute;
+  width: 60vw;
+  height: 30vh;
+  border-radius: 50%;
+  filter: blur(60px);
+  pointer-events: none;
+  will-change: transform;
+}
+.cloud-1 {
+  top: 8%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.55), transparent 70%);
+  opacity: 0.35;
+  animation: drift 42s linear infinite;
+}
+.cloud-2 {
+  top: 55%;
+  background: radial-gradient(circle, rgba(147, 197, 253, 0.6), transparent 70%);
+  opacity: 0.3;
+  animation: drift 58s linear infinite;
+  animation-delay: -18s;
+}
+
+@keyframes drift {
+  0%   { transform: translateX(-35vw); }
+  100% { transform: translateX(125vw); }
+}
+
+/* Drone that flies across the screen */
+.drone-flyer {
+  position: absolute;
+  top: 18%;
+  left: 0;
+  animation: drone-fly 22s linear infinite;
+  will-change: transform;
+}
+.drone-flyer--lower {
+  top: 68%;
+  animation-duration: 30s;
+  animation-delay: -12s;
+  transform: scale(0.7);
+  opacity: 0.75;
+}
+
+@keyframes drone-fly {
+  0%   { transform: translateX(-12vw); }
+  100% { transform: translateX(118vw); }
+}
+
+/* Subtle vertical bob layered on top of the horizontal flight */
+.drone-bob {
+  animation: drone-bob 3.2s ease-in-out infinite;
+  filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.45));
+}
+
+@keyframes drone-bob {
+  0%, 100% { transform: translateY(0) rotate(-1.5deg); }
+  50%      { transform: translateY(-10px) rotate(1.5deg); }
+}
+
+/* Spinning propeller blades */
+.prop-spin {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: prop-spin 0.18s linear infinite;
+}
+
+@keyframes prop-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Respect reduced-motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .drone-bg-anim,
+  .cloud,
+  .drone-flyer,
+  .drone-bob,
+  .prop-spin,
+  .mist-band {
+    animation: none !important;
+  }
+}
