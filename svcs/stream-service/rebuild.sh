@@ -6,7 +6,7 @@
 # below if you're targeting a different account / region / repo.
 #
 # Usage:
-#   svcs/backend/rebuild.sh                     # full build + push
+#   svcs/stream-service/rebuild.sh                     # full build + push
 #   TAG=$(git rev-parse --short HEAD) … rebuild.sh  # immutable tag
 #   PLATFORM=linux/arm64    … rebuild.sh        # build for arm nodes
 

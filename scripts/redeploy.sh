@@ -3,7 +3,7 @@
 # Rebuild + deploy (or upgrade) the drone-space stack on Kubernetes.
 #
 # Steps:
-#   1. (only with -b / --build) Run svcs/backend/rebuild.sh and
+#   1. (only with -b / --build) Run svcs/stream-service/rebuild.sh and
 #      svcs/frontend/rebuild.sh — build and push images to ECR.
 #   2. Refresh the `ecr-regcred` docker-registry Secret. ECR auth tokens
 #      expire after 12h, so we re-mint it every deploy — pods reference it
@@ -49,7 +49,7 @@ ECR_REGISTRY="${ECR_REGISTRY:-190016928273.dkr.ecr.eu-central-1.amazonaws.com}"
 ECR_REGION="${ECR_REGION:-eu-central-1}"
 ECR_SECRET_NAME="${ECR_SECRET_NAME:-ecr-regcred}"
 
-BACKEND_REBUILD="$REPO_ROOT/svcs/backend/rebuild.sh"
+BACKEND_REBUILD="$REPO_ROOT/svcs/stream-service/rebuild.sh"
 FRONTEND_REBUILD="$REPO_ROOT/svcs/frontend/rebuild.sh"
 
 # Keys that live in the Secret — never written into helm values.

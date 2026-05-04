@@ -147,7 +147,7 @@ docker compose down -v                  # stop + drop pgdata + re-init schema ne
 ### What needs to be set in compose vs. `.env`
 
 - `.env` (repo root) carries the **values** (Clerk keys, AWS creds, optional overrides).
-- `docker-compose.yml` declares **wiring**: which services exist, what env they receive, the build contexts (`./svcs/frontend`, `./svcs/backend`), the bind mounts (`./app_data → /app_data`, `./scripts/db/init → /docker-entrypoint-initdb.d`), the named volume `drone_pgdata`, and the `depends_on: db: condition: service_healthy` gate.
+- `docker-compose.yml` declares **wiring**: which services exist, what env they receive, the build contexts (`./svcs/frontend`, `./svcs/stream-service`), the bind mounts (`./app_data → /app_data`, `./scripts/db/init → /docker-entrypoint-initdb.d`), the named volume `drone_pgdata`, and the `depends_on: db: condition: service_healthy` gate.
 - `NEXT_PUBLIC_*` and `BACKEND_INTERNAL_URL` are passed as **build-args** in compose so they're inlined into the Next.js bundle/manifest at build time — runtime-only env wouldn't reach the static client code.
 
 ---
@@ -167,7 +167,7 @@ docker compose up -d db
 ### 2. Backend
 
 ```bash
-cd svcs/backend
+cd svcs/stream-service
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -225,9 +225,9 @@ Open <http://localhost:3000>.
 
 ## Database migrations
 
-Alembic config lives at [svcs/backend/alembic.ini](svcs/backend/alembic.ini) and
-[svcs/backend/alembic/env.py](svcs/backend/alembic/env.py). The initial migration
-([svcs/backend/alembic/versions/0001_create_videos_table.py](svcs/backend/alembic/versions/0001_create_videos_table.py))
+Alembic config lives at [svcs/stream-service/alembic.ini](svcs/stream-service/alembic.ini) and
+[svcs/stream-service/alembic/env.py](svcs/stream-service/alembic/env.py). The initial migration
+([svcs/stream-service/alembic/versions/0001_create_videos_table.py](svcs/stream-service/alembic/versions/0001_create_videos_table.py))
 creates `drone_space.videos`. Migrations run automatically when the backend
 starts up (`db.run_migrations()` in the FastAPI lifespan), so there's no
 manual step in normal operation.
@@ -235,7 +235,7 @@ manual step in normal operation.
 To create a new migration:
 
 ```bash
-cd svcs/backend
+cd svcs/stream-service
 source .venv/bin/activate
 export DATABASE_URL='postgresql+psycopg://drone:drone@localhost:5432/drone'
 alembic revision -m "describe change"
@@ -283,3 +283,40 @@ sit straight under the bucket root.
 - **Frontend says `ECONNREFUSED 127.0.0.1:8000` in compose** — the rewrite target was baked into `routes-manifest.json` at build time without `BACKEND_INTERNAL_URL` set. Rebuild the frontend image with the build-arg supplied (compose does this automatically).
 - **Folder created locally but not in S3** — check the backend log for `s3: …`. The startup line tells you whether the bucket/credentials resolved; per-call failures are logged at `WARNING`.
 - **Reset the database** — `docker compose down -v` drops the `drone_pgdata` volume; the next `up` re-runs init script + migrations from scratch.
+
+---
+
+## Deploying to Kubernetes (Helm)
+
+The project includes a Helm chart and utility scripts for deploying to an Amazon EKS or similar Kubernetes cluster.
+
+### Prerequisites
+
+1. Create a `.env` file at the repository root and fill in your Clerk and AWS keys.
+2. Ensure you have `kubectl`, `helm`, and `aws` CLI installed and authenticated to your cluster and AWS account.
+3. The Helm chart assumes an external PostgreSQL database (e.g., AWS RDS). Update the `database.host` in `pkgs/k8s/chart/values.yaml` to point to your instance.
+
+### 1. Initialize Secrets
+
+Run the initialization script to bootstrap your `drone-secrets` Secret. This pulls the `CLERK_SECRET_KEY`, AWS credentials, and `DB_PASSWORD` directly from your `.env` (or environment variables) and applies them to the cluster idempotently.
+
+```bash
+kubectl create namespace drone-space
+pkgs/k8s/init.sh
+```
+
+### 2. Build and Deploy
+
+The `redeploy.sh` script handles building cross-platform images, pushing them to ECR, minting a temporary ECR pull secret (`ecr-regcred`), translating your `.env` into Helm overrides, and triggering a rollout restart.
+
+To build the images and deploy in one step:
+
+```bash
+scripts/redeploy.sh --build
+```
+
+If your images are already pushed and you only want to update configuration or chart templates, you can omit the `--build` flag:
+
+```bash
+scripts/redeploy.sh
+```

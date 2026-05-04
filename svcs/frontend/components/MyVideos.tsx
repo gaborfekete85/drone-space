@@ -279,16 +279,26 @@ export default function MyVideos({ userId }: Props) {
 
       {previewUrl && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-slate-900/80 p-4 backdrop-blur-sm"
           onClick={() => setPreviewUrl(null)}
         >
           <video
             src={previewUrl}
             controls
             autoPlay
-            className="max-h-[90vh] w-auto max-w-[90vw] rounded-xl shadow-2xl"
+            className="max-h-[80vh] w-auto max-w-[90vw] rounded-xl shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           />
+          {/* Debug: surface the temporary S3 URL the player is using. */}
+          <div
+            className="max-w-[90vw] rounded-md bg-slate-950/80 px-3 py-2 text-xs text-slate-200 ring-1 ring-white/10"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span className="mr-1 font-semibold text-slate-400">
+              S3 presigned (temporal url):
+            </span>
+            <span className="break-all font-mono">{previewUrl}</span>
+          </div>
         </div>
       )}
     </div>

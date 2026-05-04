@@ -35,7 +35,7 @@ services:
 
   backend:
     build:
-      context: ./svcs/backend
+      context: ./svcs/stream-service
     container_name: drone-backend
     environment:
       APP_DATA_ROOT: /app_data

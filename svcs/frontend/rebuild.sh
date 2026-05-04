@@ -76,7 +76,7 @@ fi
 build_args+=( "--build-arg" "BACKEND_INTERNAL_URL=http://backend:8000" )
 
 # --- ensure cross-platform build infra ---------------------------------------
-# See svcs/backend/rebuild.sh for the why. Same setup used here.
+# See svcs/stream-service/rebuild.sh for the why. Same setup used here.
 if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
   echo "Creating buildx builder '$BUILDER' (docker-container driver) …"
   docker buildx create \
