@@ -1,0 +1,119 @@
+# Defaults. Override via:
+#   - scripts/redeploy.sh    (auto-injects everything from .env)
+#   - helm install --set …   (manual one-offs)
+#   - helm install -f …      (custom values file)
+
+# ---------------------------------------------------------------------------
+# Container images
+# ---------------------------------------------------------------------------
+
+# Refreshed every deploy by scripts/redeploy.sh — set to [] to disable for
+# clusters that don't need a pull credential (e.g. public registries, IRSA).
+imagePullSecrets:
+  - name: ecr-regcred
+
+
+backend:
+  image:
+    repository: 190016928273.dkr.ecr.eu-central-1.amazonaws.com/drone-stream-service
+    tag: latest
+    # `Always` because we deploy `:latest`. Switch to immutable tags
+    # (e.g. git SHA from `TAG=$(git rev-parse --short HEAD) rebuild.sh`)
+    # and IfNotPresent for prod.
+    pullPolicy: Always
+  port: 8000           # MUST match BACKEND_INTERNAL_URL baked into the
+                       # frontend image. The frontend Service has to be
+                       # named `backend` for the same reason — see ingress
+                       # template + svcs/frontend/Dockerfile.
+  replicas: 1
+  resources: {}
+  # Optional dependency for clean DB connect failures vs. crashloops;
+  # the lifespan calls run_migrations() on startup which retries.
+  startupProbe:
+    httpGet: { path: /api/health, port: 8000 }
+    failureThreshold: 30
+    periodSeconds: 2
+  readinessProbe:
+    httpGet: { path: /api/health, port: 8000 }
+    periodSeconds: 10
+
+frontend:
+  image:
+    repository: 190016928273.dkr.ecr.eu-central-1.amazonaws.com/drone-frontend
+    tag: latest
+    pullPolicy: Always
+  port: 3000
+  replicas: 1
+  resources: {}
+  readinessProbe:
+    httpGet: { path: /sign-in, port: 3000 }
+    periodSeconds: 10
+
+# ---------------------------------------------------------------------------
+# External Postgres (RDS) — DB is NOT deployed by this chart.
+# DB_PASSWORD is sourced from the Secret below.
+# ---------------------------------------------------------------------------
+
+database:
+  host: database-1.c3qy26ieeay3.eu-north-1.rds.amazonaws.com
+  port: 5432
+  user: postgres
+  database: postgres
+  schema: drone_space   # informational; backend code uses fully-qualified
+                        # `drone_space.<table>` and migrations run
+                        # `CREATE SCHEMA IF NOT EXISTS drone_space`.
+
+# ---------------------------------------------------------------------------
+# Pre-existing Secret created by pkgs/k8s/init.sh.
+# Required keys:
+#   - CLERK_SECRET_KEY        (frontend runtime — Clerk middleware)
+#   - AWS_ACCESS_KEY_ID       (backend runtime  — boto3 / S3 mirror)
+#   - AWS_SECRET_ACCESS_KEY   (backend runtime  — boto3 / S3 mirror)
+#   - DB_PASSWORD             (backend runtime  — composed into DATABASE_URL)
+# ---------------------------------------------------------------------------
+
+secret:
+  name: drone-secrets
+
+# ---------------------------------------------------------------------------
+# Persistent storage for backend's /app_data volume
+# ---------------------------------------------------------------------------
+
+storage:
+  enabled: true
+  size: 10Gi
+  storageClassName: ""   # empty = cluster default
+
+# ---------------------------------------------------------------------------
+# Ingress — terminates at frontend; Next.js proxies /api/backend/* to the
+# in-cluster backend Service via BACKEND_INTERNAL_URL.
+# ---------------------------------------------------------------------------
+
+ingress:
+  enabled: true
+  className: nginx
+  host: drone-space.rewura.com
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: ""
+
+# ---------------------------------------------------------------------------
+# Non-secret env, shared via a ConfigMap. Populated from .env by
+# scripts/redeploy.sh — anything explicitly set here is the fallback.
+#
+# NEXT_PUBLIC_* values are inlined into the frontend client bundle at
+# *build* time (see svcs/frontend/Dockerfile). Setting them here only
+# affects server-side rendering on the frontend pod; if you change a
+# NEXT_PUBLIC_* value, rebuild and re-push the frontend image too.
+# ---------------------------------------------------------------------------
+
+env:
+  AWS_S3_BUCKET: ""
+  AWS_S3_PREFIX: ""
+  AWS_REGION: eu-central-1
+  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ""
+  NEXT_PUBLIC_CLERK_SIGN_IN_URL: /sign-in
+  NEXT_PUBLIC_CLERK_SIGN_UP_URL: /sign-up
+  NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL: /dashboard
+  NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL: /dashboard

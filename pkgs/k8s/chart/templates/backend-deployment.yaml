@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels:
+    {{- include "drone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicas }}
+  # Single-replica deploys: terminate old pod before starting new one so we
+  # never see two pods at once (and a stuck pull doesn't keep the old pod
+  # hanging around indefinitely). Brief downtime is acceptable here.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "drone.backend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "drone.backend.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: backend
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.backend.port }}
+          envFrom:
+            # Non-secret env shared from the ConfigMap (AWS_S3_BUCKET,
+            # AWS_S3_PREFIX, AWS_REGION, NEXT_PUBLIC_* — frontend keys are
+            # harmless here).
+            - configMapRef:
+                name: drone-config
+          env:
+            - name: APP_DATA_ROOT
+              value: /app_data
+
+            # Composed DATABASE_URL: secret-sourced password substituted via
+            # Kubernetes' env-var expansion ($(VAR) only resolves variables
+            # declared earlier in this same env list, so DB_PASSWORD must
+            # come first).
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: DB_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql+psycopg://{{ .Values.database.user }}:$(DB_PASSWORD)@{{ .Values.database.host }}:{{ .Values.database.port }}/{{ .Values.database.database }}"
+
+            # boto3 credentials for the optional S3 mirror + presign URLs.
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: AWS_SECRET_ACCESS_KEY
+          volumeMounts:
+            - name: app-data
+              mountPath: /app_data
+          {{- with .Values.backend.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backend.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backend.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: app-data
+          {{- if .Values.storage.enabled }}
+          persistentVolumeClaim:
+            claimName: drone-app-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

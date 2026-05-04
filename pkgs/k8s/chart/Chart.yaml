@@ -1,0 +1,6 @@
+apiVersion: v2
+name: drone-space
+description: Drone-footage library — backend + frontend in a single namespace
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

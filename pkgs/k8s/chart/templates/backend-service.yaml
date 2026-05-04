@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  # Service name MUST be `backend` so the frontend image's baked-in rewrite
+  # target (`http://backend:8000`) resolves correctly.
+  name: backend
+  labels:
+    {{- include "drone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.backend.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "drone.backend.selectorLabels" . | nindent 4 }}
