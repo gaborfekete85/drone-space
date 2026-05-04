@@ -6,9 +6,5 @@ export default async function MyVideosPage() {
   const { userId } = await auth();
   if (!userId) redirect("/sign-in");
 
-  return (
-    <div className="mx-auto max-w-7xl">
-      <MyVideos userId={userId} />
-    </div>
-  );
+  return <MyVideos userId={userId} />;
 }

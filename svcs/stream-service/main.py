@@ -44,7 +44,7 @@ APP_DATA_ROOT = Path(
 VIDEOS_ROOT = APP_DATA_ROOT / "videos"
 VIDEOS_ROOT.mkdir(parents=True, exist_ok=True)
 
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
+VIDEO_EXTENSIONS = {".mp4"}
 META_SUFFIX = ".meta.json"
 COVER_SUFFIX = "_cover.jpg"
 

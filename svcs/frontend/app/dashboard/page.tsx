@@ -10,7 +10,7 @@ export default async function DashboardHome() {
     "pilot";
 
   return (
-    <div className="mx-auto max-w-7xl space-y-8">
+    <div className="space-y-8">
       <header className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-wider text-brand-600 dark:text-orange-400">

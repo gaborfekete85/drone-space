@@ -93,7 +93,9 @@ ingress:
   enabled: true
   className: nginx
   host: drone-space.rewura.com
-  annotations: {}
+  annotations:
+    # Allows large video uploads without triggering a 413 Request Entity Too Large
+    nginx.ingress.kubernetes.io/proxy-body-size: "10000m"
   tls:
     enabled: false
     secretName: ""

@@ -84,8 +84,10 @@ export default function UploadVideoModal({
 
   function pickFile(f: File | null) {
     if (!f) return;
-    if (!f.type.startsWith("video/") && !/\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name)) {
-      setError("Please choose a video file (mp4, mov, webm, mkv, avi).");
+    // Backend currently accepts mp4 only — keep the client check in sync so
+    // the user gets a clear message instead of a 415 from the API.
+    if (f.type !== "video/mp4" && !/\.mp4$/i.test(f.name)) {
+      setError("Please choose an .mp4 file (only mp4 is supported).");
       return;
     }
     setError(null);
@@ -244,14 +246,14 @@ export default function UploadVideoModal({
                   Drop a video here, or click to browse
                 </p>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  mp4, mov, webm, mkv or avi
+                  mp4 only
                 </p>
               </>
             )}
             <input
               ref={fileInputRef}
               type="file"
-              accept="video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi"
+              accept="video/mp4,.mp4"
               hidden
               onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
             />

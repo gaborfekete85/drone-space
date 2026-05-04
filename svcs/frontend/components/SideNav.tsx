@@ -3,7 +3,15 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const items = [
+// Exported so DashboardShell can reuse the same list for the mobile drop-down
+// menu — keeps "what counts as primary navigation" defined in one place.
+export type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ReactNode;
+};
+
+export const NAV_ITEMS: NavItem[] = [
   {
     href: "/dashboard",
     label: "Home",
@@ -16,7 +24,7 @@ const items = [
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
-        className="h-5 w-5"
+        className="h-5 w-5 shrink-0"
         aria-hidden
       >
         <path d="M3 12l9-9 9 9" />
@@ -36,7 +44,7 @@ const items = [
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
-        className="h-5 w-5"
+        className="h-5 w-5 shrink-0"
         aria-hidden
       >
         <rect x="3" y="5" width="15" height="14" rx="2" />
@@ -46,35 +54,36 @@ const items = [
   },
 ];
 
-export default function SideNav() {
+export default function SideNav({ expanded }: { expanded: boolean }) {
   const pathname = usePathname();
+
   return (
-    <aside className="hidden md:flex md:w-60 shrink-0 border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-      <nav className="flex-1 p-4">
-        <ul className="space-y-1">
-          {items.map((item) => {
-            const active =
-              pathname === item.href ||
-              (item.href !== "/dashboard" && pathname.startsWith(item.href));
-            return (
-              <li key={item.href}>
-                <Link
-                  href={item.href}
-                  className={
-                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition " +
-                    (active
-                      ? "bg-brand-50 text-brand-700 dark:bg-orange-500/15 dark:text-orange-400"
-                      : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white")
-                  }
-                >
-                  {item.icon}
-                  {item.label}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
-      </nav>
-    </aside>
+    <nav className="mt-2 flex-1 px-2">
+      <ul className="space-y-1">
+        {NAV_ITEMS.map((item) => {
+          const active =
+            pathname === item.href ||
+            (item.href !== "/dashboard" && pathname.startsWith(item.href));
+          return (
+            <li key={item.href}>
+              <Link
+                href={item.href}
+                // Native tooltip in rail mode so each icon is still labelled.
+                title={!expanded ? item.label : undefined}
+                className={
+                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition " +
+                  (active
+                    ? "bg-brand-50 text-brand-700 dark:bg-orange-500/15 dark:text-orange-400"
+                    : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white")
+                }
+              >
+                {item.icon}
+                {expanded && <span className="truncate">{item.label}</span>}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }
