@@ -21,7 +21,7 @@ services:
       - drone_pgdata:/var/lib/postgresql/data
       # Postgres runs every .sql in this dir once on first init (when the
       # data directory is empty). Used to create the drone_space schema.
-      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ./scripts/db/init:/docker-entrypoint-initdb.d:ro
     ports:
       - "5432:5432"
     expose:
@@ -35,7 +35,7 @@ services:
 
   backend:
     build:
-      context: ./backend
+      context: ./svcs/backend
     container_name: drone-backend
     environment:
       APP_DATA_ROOT: /app_data
@@ -60,7 +60,7 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: ./svcs/frontend
       dockerfile: Dockerfile
       args:
         # NEXT_PUBLIC_* must be set at build time so Next inlines them into

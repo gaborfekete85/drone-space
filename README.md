@@ -20,35 +20,38 @@ mirrors the same hierarchy for off-site storage.
 
 ```
 .
-├── frontend/                  Next.js app — everything browser-facing lives here
-│   ├── app/                   Routes (dashboard, my-videos, sign-in/up)
-│   ├── components/            React components (VideoExplorer, MyVideos, UploadVideoModal, ThemeToggle…)
-│   ├── public/                Static assets (drone hero image, etc.)
-│   ├── middleware.ts          Clerk auth gate (everything except /, /sign-in, /sign-up requires auth)
-│   ├── next.config.mjs        Standalone build + /api/backend/* rewrite to BACKEND_INTERNAL_URL
-│   ├── tailwind.config.js     darkMode: "class" + brand palette
-│   ├── tsconfig.json          @/* import alias, paths relative to frontend/
-│   ├── package.json
-│   ├── Dockerfile             Multi-stage image (deps → build → runner)
-│   └── .env.local             Picked up by `next dev` for local development
+├── svcs/                          Long-running services (one container each)
+│   ├── frontend/                  Next.js app — everything browser-facing
+│   │   ├── app/                   Routes (dashboard, my-videos, sign-in/up)
+│   │   ├── components/            React components (VideoExplorer, MyVideos, UploadVideoModal, ThemeToggle…)
+│   │   ├── public/                Static assets (drone hero image, etc.)
+│   │   ├── middleware.ts          Clerk auth gate (everything except /, /sign-in, /sign-up requires auth)
+│   │   ├── next.config.mjs        Standalone build + /api/backend/* rewrite to BACKEND_INTERNAL_URL
+│   │   ├── tailwind.config.js     darkMode: "class" + brand palette
+│   │   ├── tsconfig.json          @/* import alias, paths relative to svcs/frontend/
+│   │   ├── package.json
+│   │   ├── Dockerfile             Multi-stage image (deps → build → runner)
+│   │   └── .env.local             Picked up by `next dev` for local development
+│   │
+│   └── backend/
+│       ├── main.py                FastAPI app: /api/folders, /api/upload, /api/cover, /api/stream, /api/check_access, /api/health
+│       ├── db.py                  SQLAlchemy engine, run_migrations(), insert_video(), get_video()
+│       ├── s3.py                  Optional S3 mirror (folder markers, upload bundle, presigned-URL playback)
+│       ├── alembic.ini
+│       ├── alembic/               env.py, script.py.mako, versions/
+│       ├── Dockerfile             Slim Python 3.12 image
+│       └── requirements.txt
 │
-├── backend/
-│   ├── main.py                FastAPI app: /api/folders, /api/upload, /api/cover, /api/stream, /api/health
-│   ├── db.py                  SQLAlchemy engine, run_migrations(), insert_video()
-│   ├── s3.py                  Optional S3 mirror (folder markers + upload bundle)
-│   ├── alembic.ini
-│   ├── alembic/               env.py, script.py.mako, versions/
-│   ├── Dockerfile             Slim Python 3.12 image
-│   └── requirements.txt
+├── scripts/                       One-shot / utility scripts (NOT services)
+│   ├── db/
+│   │   └── init/                  *.sql files run once on first Postgres init (bind-mounted into the db container)
+│   └── helper_scripts/            Standalone helpers (e.g. generate.py — manual S3 presign)
 │
-├── db/
-│   └── init/                  *.sql files run once on first Postgres init
-│
-├── app_data/                  Local video store (mounted into the backend at /app_data)
+├── app_data/                      Local video store (bind-mounted into the backend at /app_data)
 │   └── videos/<user_id>/<folder>/.../<file>.mp4 (+ .meta.json + _cover.jpg)
 │
-├── docker-compose.yml         Three services on a private network, one named volume for pgdata
-└── .env                       Source of truth for compose interpolation + service runtime env
+├── docker-compose.yml             Three services on a private network, one named volume for pgdata
+└── .env                           Source of truth for compose interpolation + service runtime env
 ```
 
 ---
@@ -125,7 +128,7 @@ Prereqs: Docker Desktop with `docker compose` v2.
    ```
 
    First boot does:
-   - Postgres starts, runs `db/init/01-create-schema.sql` once → creates the `drone_space` schema.
+   - Postgres starts, runs `scripts/db/init/01-create-schema.sql` once → creates the `drone_space` schema.
    - Backend waits for `pg_isready`, then runs `alembic upgrade head` on startup → creates `drone_space.videos`.
    - Frontend builds with the Clerk publishable key + `BACKEND_INTERNAL_URL` baked into the client manifest.
 
@@ -144,7 +147,7 @@ docker compose down -v                  # stop + drop pgdata + re-init schema ne
 ### What needs to be set in compose vs. `.env`
 
 - `.env` (repo root) carries the **values** (Clerk keys, AWS creds, optional overrides).
-- `docker-compose.yml` declares **wiring**: which services exist, what env they receive, the build context for the frontend (`./frontend`), the bind mounts (`./app_data → /app_data`, `./db/init → /docker-entrypoint-initdb.d`), the named volume `drone_pgdata`, and the `depends_on: db: condition: service_healthy` gate.
+- `docker-compose.yml` declares **wiring**: which services exist, what env they receive, the build contexts (`./svcs/frontend`, `./svcs/backend`), the bind mounts (`./app_data → /app_data`, `./scripts/db/init → /docker-entrypoint-initdb.d`), the named volume `drone_pgdata`, and the `depends_on: db: condition: service_healthy` gate.
 - `NEXT_PUBLIC_*` and `BACKEND_INTERNAL_URL` are passed as **build-args** in compose so they're inlined into the Next.js bundle/manifest at build time — runtime-only env wouldn't reach the static client code.
 
 ---
@@ -164,14 +167,14 @@ docker compose up -d db
 ### 2. Backend
 
 ```bash
-cd backend
+cd svcs/backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
 # Point at the local docker postgres + a local app_data dir.
 export DATABASE_URL='postgresql+psycopg://drone:drone@localhost:5432/drone'
-export APP_DATA_ROOT="$PWD/../app_data"
+export APP_DATA_ROOT="$PWD/../../app_data"
 
 # Optional S3 mirror — set these if you want uploads to also go to S3.
 # export AWS_S3_BUCKET=drones-ch-store-dev-1
@@ -187,8 +190,8 @@ The first run executes the Alembic migration against the local Postgres.
 ### 3. Frontend
 
 The frontend reads `.env.local` for `npm run dev` (Next.js convention),
-distinct from the `.env` Compose uses. Create `frontend/.env.local` with the
-same Clerk values:
+distinct from the `.env` Compose uses. Create `svcs/frontend/.env.local` with
+the same Clerk values:
 
 ```
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
@@ -205,7 +208,7 @@ BACKEND_INTERNAL_URL=http://127.0.0.1:8000
 Then:
 
 ```bash
-cd frontend
+cd svcs/frontend
 npm install
 npm run dev
 ```
@@ -215,16 +218,16 @@ Open <http://localhost:3000>.
 #### Why both `.env` and `.env.local`
 
 - `.env` (at the **repo root**) is for **Compose** — build-args + `env_file:`. Loaded automatically by `docker compose`.
-- `frontend/.env.local` is for **Next.js dev** — `next dev` reads it. Compose does **not** read it.
+- `svcs/frontend/.env.local` is for **Next.js dev** — `next dev` reads it. Compose does **not** read it.
 - Same values, two files. Set up once and forget.
 
 ---
 
 ## Database migrations
 
-Alembic config lives at [backend/alembic.ini](backend/alembic.ini) and
-[backend/alembic/env.py](backend/alembic/env.py). The initial migration
-([backend/alembic/versions/0001_create_videos_table.py](backend/alembic/versions/0001_create_videos_table.py))
+Alembic config lives at [svcs/backend/alembic.ini](svcs/backend/alembic.ini) and
+[svcs/backend/alembic/env.py](svcs/backend/alembic/env.py). The initial migration
+([svcs/backend/alembic/versions/0001_create_videos_table.py](svcs/backend/alembic/versions/0001_create_videos_table.py))
 creates `drone_space.videos`. Migrations run automatically when the backend
 starts up (`db.run_migrations()` in the FastAPI lifespan), so there's no
 manual step in normal operation.
@@ -232,7 +235,7 @@ manual step in normal operation.
 To create a new migration:
 
 ```bash
-cd backend
+cd svcs/backend
 source .venv/bin/activate
 export DATABASE_URL='postgresql+psycopg://drone:drone@localhost:5432/drone'
 alembic revision -m "describe change"
@@ -253,8 +256,8 @@ browser  --(same origin)-->  frontend :3000  --(rewrite, compose net)-->  backen
 ```
 
 - Browser only ever talks to the frontend, so CORS never enters the picture.
-- [frontend/next.config.mjs](frontend/next.config.mjs) rewrites `/api/backend/*` → `${BACKEND_INTERNAL_URL}/api/*`. In compose, that's `http://backend:8000`; locally, `http://127.0.0.1:8000`.
-- Clerk middleware ([frontend/middleware.ts](frontend/middleware.ts)) protects everything except `/`, `/sign-in`, `/sign-up`, including the `/api/backend/*` proxy — so unauthenticated requests can't reach the backend even if the proxy is up.
+- [svcs/frontend/next.config.mjs](svcs/frontend/next.config.mjs) rewrites `/api/backend/*` → `${BACKEND_INTERNAL_URL}/api/*`. In compose, that's `http://backend:8000`; locally, `http://127.0.0.1:8000`.
+- Clerk middleware ([svcs/frontend/middleware.ts](svcs/frontend/middleware.ts)) protects everything except `/`, `/sign-in`, `/sign-up`, including the `/api/backend/*` proxy — so unauthenticated requests can't reach the backend even if the proxy is up.
 - Uploads write the file + `*.meta.json` sidecar + optional `_cover.jpg` to disk, insert a row into `drone_space.videos`, then queue an S3 mirror as a FastAPI `BackgroundTask` (so the API response returns as soon as local + DB are durable).
 
 ---
