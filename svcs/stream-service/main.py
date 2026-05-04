@@ -31,7 +31,21 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 import s3
-from db import get_video, insert_video, list_video_ids, run_migrations
+from db import (
+    get_video,
+    insert_video,
+    list_folder_shares,
+    list_shared_with,
+    list_video_meta,
+    list_video_shares,
+    run_migrations,
+    set_video_visibility,
+    share_folder,
+    share_video,
+    unshare_folder,
+    unshare_video,
+    user_can_access_video,
+)
 
 log = logging.getLogger("dronespace.backend")
 
@@ -112,7 +126,7 @@ def list_folder(
 
     parts = [p for p in (path or "").strip("/").split("/") if p]
     folder_path_norm = "/".join(parts)
-    ids_by_filename = list_video_ids(user_id, folder_path_norm)
+    meta_by_filename = list_video_meta(user_id, folder_path_norm)
 
     folders: list[dict] = []
     videos: list[dict] = []
@@ -126,9 +140,11 @@ def list_folder(
         elif entry.is_file() and _is_video(entry):
             stat = entry.stat()
             cover_path = _cover_for(entry)
+            row_meta = meta_by_filename.get(entry.name) or {}
             videos.append(
                 {
-                    "id": ids_by_filename.get(entry.name),
+                    "id": row_meta.get("id"),
+                    "visibility": row_meta.get("visibility", "private"),
                     "name": entry.name,
                     "size": stat.st_size,
                     "uploaded_at": datetime.fromtimestamp(
@@ -311,10 +327,9 @@ def check_access(
 ) -> dict:
     """Authorize playback for a video and return a presigned S3 URL.
 
-    Access policy (for now): the request must come from a logged-in user,
-    which we represent here as a non-empty user_id. The Clerk middleware in
-    front of the proxy already enforces auth at the edge; this is a defense
-    in depth check.
+    Access policy: the caller must be the owner, OR the video must be public,
+    OR the caller must have an explicit video-share or a folder-share that
+    cascades to the video.
     """
     if not user_id.strip():
         raise HTTPException(status_code=403, detail="forbidden")
@@ -322,6 +337,9 @@ def check_access(
     video = get_video(video_id)
     if not video:
         raise HTTPException(status_code=404, detail="video not found")
+
+    if not user_can_access_video(user_id.strip(), video_id):
+        raise HTTPException(status_code=403, detail="forbidden")
 
     if not s3.is_enabled():
         raise HTTPException(
@@ -341,3 +359,125 @@ def check_access(
         "url": url,
         "expires_in": expires,
     }
+
+
+# ---------------------------------------------------------------------------
+# Sharing & visibility
+# ---------------------------------------------------------------------------
+
+
+def _normalize_path(p: str) -> str:
+    return "/".join(part for part in p.strip("/").split("/") if part)
+
+
+def _require_owner(video_id: str, user_id: str) -> dict:
+    if not user_id.strip():
+        raise HTTPException(status_code=403, detail="forbidden")
+    video = get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="video not found")
+    if video["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="only the owner can do this")
+    return video
+
+
+class VisibilityBody(BaseModel):
+    visibility: str  # "public" | "private"
+
+
+@app.patch("/api/videos/{video_id}/visibility")
+def update_visibility(
+    video_id: str,
+    body: VisibilityBody,
+    user_id: str = Query(...),
+) -> dict:
+    _require_owner(video_id, user_id)
+    if body.visibility not in {"public", "private"}:
+        raise HTTPException(
+            status_code=400, detail="visibility must be public or private"
+        )
+    set_video_visibility(video_id, body.visibility)
+    return {"ok": True, "video_id": video_id, "visibility": body.visibility}
+
+
+class ShareBody(BaseModel):
+    shared_with_user_id: str
+
+
+@app.get("/api/videos/{video_id}/shares")
+def get_video_shares(video_id: str, user_id: str = Query(...)) -> dict:
+    _require_owner(video_id, user_id)
+    return {"shares": list_video_shares(video_id)}
+
+
+@app.post("/api/videos/{video_id}/shares")
+def create_video_share(
+    video_id: str,
+    body: ShareBody,
+    user_id: str = Query(...),
+) -> dict:
+    _require_owner(video_id, user_id)
+    target = body.shared_with_user_id.strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="shared_with_user_id required")
+    if target == user_id:
+        raise HTTPException(status_code=400, detail="cannot share with yourself")
+    share_video(video_id, target, user_id)
+    return {"ok": True, "shared_with_user_id": target}
+
+
+@app.delete("/api/videos/{video_id}/shares/{shared_with_user_id}")
+def delete_video_share(
+    video_id: str,
+    shared_with_user_id: str,
+    user_id: str = Query(...),
+) -> dict:
+    _require_owner(video_id, user_id)
+    unshare_video(video_id, shared_with_user_id)
+    return {"ok": True}
+
+
+class FolderShareBody(BaseModel):
+    path: str = ""
+    shared_with_user_id: str
+
+
+@app.get("/api/folders/shares")
+def get_folder_shares(
+    user_id: str = Query(...),
+    path: str = Query(""),
+) -> dict:
+    return {"shares": list_folder_shares(user_id, _normalize_path(path))}
+
+
+@app.post("/api/folders/shares")
+def create_folder_share(
+    body: FolderShareBody,
+    user_id: str = Query(...),
+) -> dict:
+    target = body.shared_with_user_id.strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="shared_with_user_id required")
+    if target == user_id:
+        raise HTTPException(status_code=400, detail="cannot share with yourself")
+    share_folder(user_id, _normalize_path(body.path), target, user_id)
+    return {"ok": True}
+
+
+@app.delete("/api/folders/shares")
+def delete_folder_share(
+    body: FolderShareBody,
+    user_id: str = Query(...),
+) -> dict:
+    unshare_folder(
+        user_id,
+        _normalize_path(body.path),
+        body.shared_with_user_id.strip(),
+    )
+    return {"ok": True}
+
+
+@app.get("/api/shared")
+def list_shared(user_id: str = Query(..., min_length=1)) -> dict:
+    """Videos shared with the caller (via video- or folder-share)."""
+    return {"videos": list_shared_with(user_id.strip())}

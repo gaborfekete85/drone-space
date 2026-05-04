@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import ShareDialog, { type ShareTarget } from "./ShareDialog";
 import UploadVideoModal from "./UploadVideoModal";
 
 type VideoEntry = {
@@ -9,6 +10,7 @@ type VideoEntry = {
   size: number;
   uploaded_at: string;
   cover_filename?: string | null;
+  visibility?: "public" | "private";
   metadata: Record<string, unknown> & {
     location?: string | null;
     latitude?: number | null;
@@ -40,6 +42,7 @@ export default function MyVideos({ userId }: Props) {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [playError, setPlayError] = useState<string | null>(null);
+  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
 
   async function openVideo(video: VideoEntry) {
     setPlayError(null);
@@ -147,6 +150,16 @@ export default function MyVideos({ userId }: Props) {
           </button>
           <button
             type="button"
+            onClick={() =>
+              setShareTarget({ kind: "folder", folderPath: path })
+            }
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+            title={`Share /${path || "(root)"}`}
+          >
+            <ShareIcon /> Share folder
+          </button>
+          <button
+            type="button"
             onClick={() => setUploadOpen(true)}
             className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 dark:bg-orange-500 dark:hover:bg-orange-600"
           >
@@ -237,6 +250,15 @@ export default function MyVideos({ userId }: Props) {
                     : null
                 }
                 onPlay={() => openVideo(v)}
+                onShare={() => {
+                  if (!v.id) return;
+                  setShareTarget({
+                    kind: "video",
+                    videoId: v.id,
+                    videoName: v.name,
+                    visibility: v.visibility ?? "private",
+                  });
+                }}
               />
             ))}
           </div>
@@ -262,6 +284,14 @@ export default function MyVideos({ userId }: Props) {
         userId={userId}
         path={path}
         onUploaded={load}
+      />
+
+      <ShareDialog
+        open={shareTarget !== null}
+        onClose={() => setShareTarget(null)}
+        userId={userId}
+        target={shareTarget ?? { kind: "folder", folderPath: path }}
+        onUpdate={load}
       />
 
       {playError && (
@@ -309,10 +339,12 @@ function VideoTile({
   video,
   coverUrl,
   onPlay,
+  onShare,
 }: {
   video: VideoEntry;
   coverUrl: string | null;
   onPlay: () => void;
+  onShare?: () => void;
 }) {
   const m = video.metadata ?? {};
   const sizeMb = (video.size / (1024 * 1024)).toFixed(1);
@@ -354,9 +386,39 @@ function VideoTile({
       </button>
 
       <div className="space-y-2 p-4">
-        <h3 className="line-clamp-1 font-semibold text-slate-900 dark:text-white">
-          {video.name}
-        </h3>
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="line-clamp-1 font-semibold text-slate-900 dark:text-white">
+            {video.name}
+          </h3>
+          <div className="flex shrink-0 items-center gap-1">
+            <span
+              className={
+                "rounded-full px-2 py-0.5 text-[10px] font-medium uppercase " +
+                (video.visibility === "public"
+                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+                  : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400")
+              }
+              title={
+                video.visibility === "public"
+                  ? "Public — anyone can play"
+                  : "Private — only you and people you've shared with"
+              }
+            >
+              {video.visibility === "public" ? "Public" : "Private"}
+            </span>
+            {onShare && video.id && (
+              <button
+                type="button"
+                onClick={onShare}
+                aria-label="Share video"
+                title="Share / change visibility"
+                className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+              >
+                <ShareIcon />
+              </button>
+            )}
+          </div>
+        </div>
 
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-600 dark:text-slate-400">
           {typeof m.latitude === "number" && typeof m.longitude === "number" && (
@@ -423,6 +485,27 @@ function UploadIcon() {
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
       <polyline points="17 8 12 3 7 8" />
       <line x1="12" y1="3" x2="12" y2="15" />
+    </svg>
+  );
+}
+
+function ShareIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden
+    >
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+      <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
     </svg>
   );
 }

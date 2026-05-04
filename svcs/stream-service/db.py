@@ -77,18 +77,212 @@ def get_video(video_id: str) -> Optional[dict]:
 
 def list_video_ids(user_id: str, folder_path: str) -> dict[str, str]:
     """Return {filename: id} for the videos in a given folder."""
+    return {f: m["id"] for f, m in list_video_meta(user_id, folder_path).items()}
+
+
+def list_video_meta(user_id: str, folder_path: str) -> dict[str, dict]:
+    """Return {filename: {id, visibility}} for videos in a given folder."""
     with get_engine().begin() as conn:
         rows = conn.execute(
             text(
                 """
-                SELECT id::text AS id, filename
+                SELECT id::text AS id, filename, visibility
                 FROM drone_space.videos
                 WHERE user_id = :u AND folder_path = :p
                 """
             ),
             {"u": user_id, "p": folder_path},
         ).mappings().all()
-    return {r["filename"]: r["id"] for r in rows}
+    return {
+        r["filename"]: {"id": r["id"], "visibility": r["visibility"]}
+        for r in rows
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sharing & visibility
+# ---------------------------------------------------------------------------
+
+VALID_VISIBILITY = {"public", "private"}
+
+
+def set_video_visibility(video_id: str, visibility: str) -> None:
+    if visibility not in VALID_VISIBILITY:
+        raise ValueError(
+            "visibility must be one of: " + ", ".join(VALID_VISIBILITY)
+        )
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE drone_space.videos SET visibility = :v WHERE id = :id"),
+            {"v": visibility, "id": video_id},
+        )
+
+
+def share_video(video_id: str, shared_with: str, shared_by: str) -> None:
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO drone_space.video_shares
+                  (video_id, shared_with_user_id, shared_by_user_id)
+                VALUES (:vid, :w, :b)
+                ON CONFLICT (video_id, shared_with_user_id) DO NOTHING
+                """
+            ),
+            {"vid": video_id, "w": shared_with, "b": shared_by},
+        )
+
+
+def unshare_video(video_id: str, shared_with: str) -> None:
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                DELETE FROM drone_space.video_shares
+                WHERE video_id = :vid AND shared_with_user_id = :w
+                """
+            ),
+            {"vid": video_id, "w": shared_with},
+        )
+
+
+def list_video_shares(video_id: str) -> list[dict]:
+    with get_engine().begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT shared_with_user_id, shared_by_user_id, created_at
+                FROM drone_space.video_shares
+                WHERE video_id = :vid
+                ORDER BY created_at
+                """
+            ),
+            {"vid": video_id},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def share_folder(
+    owner: str, path: str, shared_with: str, shared_by: str
+) -> None:
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO drone_space.folder_shares
+                  (owner_user_id, folder_path, shared_with_user_id, shared_by_user_id)
+                VALUES (:o, :p, :w, :b)
+                ON CONFLICT (owner_user_id, folder_path, shared_with_user_id)
+                  DO NOTHING
+                """
+            ),
+            {"o": owner, "p": path, "w": shared_with, "b": shared_by},
+        )
+
+
+def unshare_folder(owner: str, path: str, shared_with: str) -> None:
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                DELETE FROM drone_space.folder_shares
+                WHERE owner_user_id = :o
+                  AND folder_path = :p
+                  AND shared_with_user_id = :w
+                """
+            ),
+            {"o": owner, "p": path, "w": shared_with},
+        )
+
+
+def list_folder_shares(owner: str, path: str) -> list[dict]:
+    with get_engine().begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT shared_with_user_id, shared_by_user_id, created_at
+                FROM drone_space.folder_shares
+                WHERE owner_user_id = :o AND folder_path = :p
+                ORDER BY created_at
+                """
+            ),
+            {"o": owner, "p": path},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def list_shared_with(user_id: str) -> list[dict]:
+    """Videos accessible to user_id via explicit video- OR folder-share."""
+    with get_engine().begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT DISTINCT
+                  v.id::text AS id,
+                  v.user_id,
+                  v.folder_path,
+                  v.filename,
+                  v.cover_filename,
+                  v.size_bytes,
+                  v.location,
+                  v.latitude,
+                  v.longitude,
+                  v.height_m,
+                  v.tags,
+                  v.taken_at,
+                  v.drone_type,
+                  v.uploaded_at,
+                  v.visibility,
+                  CASE
+                    WHEN vs.video_id IS NOT NULL THEN 'video'
+                    ELSE 'folder'
+                  END AS share_type,
+                  COALESCE(vs.shared_by_user_id, fs.shared_by_user_id)
+                    AS shared_by_user_id
+                FROM drone_space.videos v
+                LEFT JOIN drone_space.video_shares vs
+                  ON vs.video_id = v.id AND vs.shared_with_user_id = :uid
+                LEFT JOIN drone_space.folder_shares fs
+                  ON fs.owner_user_id = v.user_id
+                  AND (fs.folder_path = v.folder_path
+                       OR v.folder_path LIKE fs.folder_path || '/%')
+                  AND fs.shared_with_user_id = :uid
+                WHERE vs.video_id IS NOT NULL OR fs.owner_user_id IS NOT NULL
+                ORDER BY v.uploaded_at DESC
+                """
+            ),
+            {"uid": user_id},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def user_can_access_video(user_id: str, video_id: str) -> bool:
+    """True if user owns it, it's public, or it's shared via video / folder share."""
+    with get_engine().begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT 1 FROM drone_space.videos v
+                LEFT JOIN drone_space.video_shares vs
+                  ON vs.video_id = v.id AND vs.shared_with_user_id = :uid
+                LEFT JOIN drone_space.folder_shares fs
+                  ON fs.owner_user_id = v.user_id
+                  AND (fs.folder_path = v.folder_path
+                       OR v.folder_path LIKE fs.folder_path || '/%')
+                  AND fs.shared_with_user_id = :uid
+                WHERE v.id = :vid
+                  AND (
+                    v.user_id = :uid
+                    OR v.visibility = 'public'
+                    OR vs.video_id IS NOT NULL
+                    OR fs.owner_user_id IS NOT NULL
+                  )
+                LIMIT 1
+                """
+            ),
+            {"vid": video_id, "uid": user_id},
+        ).first()
+    return row is not None
 
 
 def insert_video(
