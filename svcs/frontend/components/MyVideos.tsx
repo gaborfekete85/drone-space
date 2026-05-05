@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import MoveVideoDialog from "./MoveVideoDialog";
 import ShareDialog, { type ShareTarget } from "./ShareDialog";
 import UploadVideoModal from "./UploadVideoModal";
 
@@ -43,6 +44,8 @@ export default function MyVideos({ userId }: Props) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [playError, setPlayError] = useState<string | null>(null);
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
+  const [moveTarget, setMoveTarget] = useState<VideoEntry | null>(null);
+  const [trashTooltipPos, setTrashTooltipPos] = useState<{ x: number; y: number } | null>(null);
 
   async function openVideo(video: VideoEntry) {
     setPlayError(null);
@@ -124,9 +127,59 @@ export default function MyVideos({ userId }: Props) {
     }
   }
 
+  async function deleteVideo(video: VideoEntry) {
+    if (!video.id) return;
+    if (!window.confirm(`Permanently delete "${video.name}"? This cannot be undone.`))
+      return;
+    try {
+      const res = await fetch(
+        `/api/backend/videos/${encodeURIComponent(video.id)}?user_id=${encodeURIComponent(userId)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.detail ?? `failed (${res.status})`);
+      }
+      await load();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "failed to delete video");
+    }
+  }
+
+  async function deleteCurrentFolder() {
+    if (!path) return; // root cannot be deleted
+    const name = data?.parts[data.parts.length - 1] ?? path;
+    if (!window.confirm(`Delete empty folder "${name}"? It must be empty.`)) return;
+    try {
+      const res = await fetch(
+        `/api/backend/folders?user_id=${encodeURIComponent(userId)}&path=${encodeURIComponent(path)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.detail ?? `failed (${res.status})`);
+      }
+      // Navigate up to the parent folder; load() runs via useEffect on path change.
+      const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      setPath(parent);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "failed to delete folder");
+    }
+  }
+
   const breadcrumbs = useMemo(() => {
     return [{ label: "My videos", idx: -1 }, ...(data?.parts ?? []).map((p, i) => ({ label: p, idx: i }))];
   }, [data]);
+
+  const isRoot = !path;
+  const folderIsEmpty =
+    data !== null && data.folders.length === 0 && data.videos.length === 0;
+  const canDeleteFolder = !isRoot && folderIsEmpty;
+  const deleteTitle = isRoot
+    ? "Cannot delete the root"
+    : !folderIsEmpty
+    ? "Please empty the folder to delete it"
+    : `Delete /${path}`;
 
   return (
     <div className="space-y-6">
@@ -141,6 +194,23 @@ export default function MyVideos({ userId }: Props) {
           </h1>
         </div>
         <div className="flex items-center gap-2">
+          {/* Cursor-following tooltip — captured at the wrapper because a
+              disabled button receives no events; the wrapper does. */}
+          <div
+            className="relative inline-flex"
+            onMouseMove={(e) => setTrashTooltipPos({ x: e.clientX, y: e.clientY })}
+            onMouseLeave={() => setTrashTooltipPos(null)}
+          >
+            <button
+              type="button"
+              onClick={deleteCurrentFolder}
+              disabled={!canDeleteFolder}
+              aria-label="Delete folder"
+              className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white p-2 text-slate-700 shadow-sm hover:bg-red-50 hover:border-red-300 hover:text-red-700 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-red-500/10 dark:hover:border-red-500/40 dark:hover:text-red-400"
+            >
+              <TrashIcon />
+            </button>
+          </div>
           <button
             type="button"
             onClick={createFolder}
@@ -259,6 +329,8 @@ export default function MyVideos({ userId }: Props) {
                     visibility: v.visibility ?? "private",
                   });
                 }}
+                onMove={v.id ? () => setMoveTarget(v) : undefined}
+                onDelete={v.id ? () => deleteVideo(v) : undefined}
               />
             ))}
           </div>
@@ -293,6 +365,28 @@ export default function MyVideos({ userId }: Props) {
         target={shareTarget ?? { kind: "folder", folderPath: path }}
         onUpdate={load}
       />
+
+      {moveTarget && moveTarget.id && (
+        <MoveVideoDialog
+          open={moveTarget !== null}
+          onClose={() => setMoveTarget(null)}
+          userId={userId}
+          videoId={moveTarget.id}
+          videoName={moveTarget.name}
+          currentPath={path}
+          onMoved={load}
+        />
+      )}
+
+      {trashTooltipPos && (
+        <div
+          role="tooltip"
+          className="pointer-events-none fixed z-50 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-xs text-white shadow-lg dark:bg-slate-700"
+          style={{ left: trashTooltipPos.x + 12, top: trashTooltipPos.y + 16 }}
+        >
+          {deleteTitle}
+        </div>
+      )}
 
       {playError && (
         <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 shadow-lg dark:border-red-900 dark:bg-red-500/10 dark:text-red-300">
@@ -340,16 +434,34 @@ function VideoTile({
   coverUrl,
   onPlay,
   onShare,
+  onMove,
+  onDelete,
 }: {
   video: VideoEntry;
   coverUrl: string | null;
   onPlay: () => void;
   onShare?: () => void;
+  onMove?: () => void;
+  onDelete?: () => void;
 }) {
   const m = video.metadata ?? {};
   const sizeMb = (video.size / (1024 * 1024)).toFixed(1);
   return (
-    <article className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-brand-500/10 dark:border-slate-800 dark:bg-slate-900 dark:hover:shadow-orange-500/20">
+    <article className="group/tile relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-brand-500/10 dark:border-slate-800 dark:bg-slate-900 dark:hover:shadow-orange-500/20">
+      {onDelete && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          aria-label={`Delete video ${video.name}`}
+          title="Delete video"
+          className="absolute right-2 top-2 z-10 rounded-full bg-slate-900/70 p-2 text-white opacity-0 shadow-lg backdrop-blur-sm transition hover:bg-red-600 group-hover/tile:opacity-100"
+        >
+          <BigTrashIcon />
+        </button>
+      )}
       <button
         type="button"
         onClick={onPlay}
@@ -406,6 +518,17 @@ function VideoTile({
             >
               {video.visibility === "public" ? "Public" : "Private"}
             </span>
+            {onMove && video.id && (
+              <button
+                type="button"
+                onClick={onMove}
+                aria-label="Move video"
+                title="Move to another folder"
+                className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+              >
+                <MoveIcon />
+              </button>
+            )}
             {onShare && video.id && (
               <button
                 type="button"
@@ -514,6 +637,43 @@ function ChevronIcon({ className = "" }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`h-4 w-4 ${className}`}>
       <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+function BigTrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+function MoveIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+      <polyline points="5 9 2 12 5 15" />
+      <polyline points="9 5 12 2 15 5" />
+      <polyline points="15 19 12 22 9 19" />
+      <polyline points="19 9 22 12 19 15" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <line x1="12" y1="2" x2="12" y2="22" />
     </svg>
   );
 }

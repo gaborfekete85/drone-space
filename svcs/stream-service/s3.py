@@ -1,14 +1,14 @@
-"""Optional S3 mirror that shadows the local app_data layout.
+"""S3 storage backend — narrow now that app_data is the metadata index.
 
-Disabled if `AWS_S3_BUCKET` is unset — the rest of the stack (local files,
-Postgres, the file-system listing) keeps working unchanged. When enabled,
-folder creation and video uploads are mirrored to:
+When `STORAGE=s3`, this module handles three things and nothing else:
+    - folder marker creation (mirror of the app_data `mkdir`)
+    - streaming the video bytes to S3 on upload
+    - presigning a GET URL for streaming playback
 
-    s3://<AWS_S3_BUCKET>/<AWS_S3_PREFIX>/<user_id>/<folder_path>/<filename>
+Listing, cover serving, and meta lookups all read from app_data, not S3.
 
-Folder creation places a 0-byte object with a trailing slash so the AWS
-console shows it as a folder; uploads write the video, the .meta.json
-sidecar, and (when present) the _cover.jpg side-by-side.
+Inert when `STORAGE=volume` — `is_enabled()` returns False and every helper
+short-circuits.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import BinaryIO, Optional
 
 import boto3
 from botocore.config import Config
@@ -24,8 +24,9 @@ from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 
 log = logging.getLogger(__name__)
 
-S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "").strip()
-S3_PREFIX = os.environ.get("AWS_S3_PREFIX", "videos").strip("/")
+STORAGE_BACKEND = os.environ.get("STORAGE", "s3").strip().lower()
+S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "drones-ch-store-dev-1").strip()
+S3_PREFIX = os.environ.get("AWS_S3_PREFIX", "").strip("/")
 S3_REGION = os.environ.get("AWS_REGION", "eu-central-1")
 
 CONTENT_TYPES: dict[str, str] = {
@@ -44,7 +45,8 @@ _client = None
 
 
 def is_enabled() -> bool:
-    return bool(S3_BUCKET)
+    """True only when the S3 backend is selected AND a bucket is configured."""
+    return STORAGE_BACKEND == "s3" and bool(S3_BUCKET)
 
 
 def _has_credentials() -> bool:
@@ -58,14 +60,17 @@ def _has_credentials() -> bool:
 
 def log_status() -> None:
     """Called at startup so the operator sees the S3 wiring decision."""
-    if not is_enabled():
-        log.info("s3: disabled (AWS_S3_BUCKET unset)")
+    if STORAGE_BACKEND != "s3":
+        log.info("s3: inactive (STORAGE=%s)", STORAGE_BACKEND)
+        return
+    if not S3_BUCKET:
+        log.error("s3: STORAGE=s3 but AWS_S3_BUCKET is unset — uploads will fail")
         return
     if not _has_credentials():
         log.warning(
             "s3: bucket=%s region=%s — but no credentials found "
             "(set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in .env). "
-            "Folder/upload mirroring will be skipped.",
+            "S3 calls will fail.",
             S3_BUCKET,
             S3_REGION,
         )
@@ -107,24 +112,127 @@ def create_folder_marker(user_id: str, folder_path: str) -> bool:
         return False
 
 
-def _put_file(local_path: Path, key: str) -> bool:
+def delete_folder_marker(user_id: str, folder_path: str) -> bool:
+    """Delete the trailing-slash folder marker. Best-effort — returns False
+    on failure but doesn't raise."""
+    if not is_enabled() or not folder_path:
+        return False
+    key = _key(user_id, folder_path) + "/"
     try:
-        _get_client().upload_file(
-            str(local_path),
-            S3_BUCKET,
-            key,
-            ExtraArgs={"ContentType": _content_type(local_path)},
-        )
-        log.info("s3: uploaded %s -> s3://%s/%s", local_path.name, S3_BUCKET, key)
+        _get_client().delete_object(Bucket=S3_BUCKET, Key=key)
+        log.info("s3: deleted folder marker s3://%s/%s", S3_BUCKET, key)
         return True
     except (ClientError, BotoCoreError, NoCredentialsError) as exc:
-        log.warning("s3: upload failed for %s: %s", key, exc)
+        log.warning("s3: delete folder marker failed for %s: %s", key, exc)
         return False
+
+
+def copy_video(
+    user_id: str,
+    src_folder: str,
+    src_filename: str,
+    dst_folder: str,
+    dst_filename: str,
+) -> bool:
+    """Server-side copy. S3 has no rename — `move` is `copy_video` then
+    `delete_video`."""
+    if not is_enabled():
+        return False
+    src_key = _key(user_id, src_folder, src_filename)
+    dst_key = _key(user_id, dst_folder, dst_filename)
+    try:
+        _get_client().copy_object(
+            Bucket=S3_BUCKET,
+            Key=dst_key,
+            CopySource={"Bucket": S3_BUCKET, "Key": src_key},
+        )
+        log.info(
+            "s3: copied s3://%s/%s -> s3://%s/%s",
+            S3_BUCKET, src_key, S3_BUCKET, dst_key,
+        )
+        return True
+    except (ClientError, BotoCoreError, NoCredentialsError) as exc:
+        log.warning("s3: copy %s -> %s failed: %s", src_key, dst_key, exc)
+        return False
+
+
+def delete_video(user_id: str, folder_path: str, filename: str) -> bool:
+    """Delete a single object (typically the .mp4) from S3."""
+    if not is_enabled():
+        return False
+    key = _key(user_id, folder_path, filename)
+    try:
+        _get_client().delete_object(Bucket=S3_BUCKET, Key=key)
+        log.info("s3: deleted s3://%s/%s", S3_BUCKET, key)
+        return True
+    except (ClientError, BotoCoreError, NoCredentialsError) as exc:
+        log.warning("s3: delete %s failed: %s", key, exc)
+        return False
+
+
+def list_keys(user_id: str, folder_path: str) -> list[str]:
+    """Return all object keys under <user>/<folder>/ (recursive). Used by
+    the empty-folder check before deletion."""
+    if not is_enabled():
+        return []
+    prefix = _key(user_id, folder_path)
+    if prefix and not prefix.endswith("/"):
+        prefix += "/"
+    keys: list[str] = []
+    try:
+        paginator = _get_client().get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+            for obj in page.get("Contents") or []:
+                key = obj.get("Key")
+                if key:
+                    keys.append(key)
+    except (ClientError, BotoCoreError, NoCredentialsError) as exc:
+        log.warning("s3: list_keys failed for %s: %s", prefix, exc)
+        return []
+    return keys
+
+
+def folder_marker_key(user_id: str, folder_path: str) -> str:
+    """Public helper: the exact key of the trailing-slash folder marker.
+    Used to distinguish 'empty folder' (only marker) from 'folder with content'."""
+    return _key(user_id, folder_path) + "/"
 
 
 def video_key(user_id: str, folder_path: str, filename: str) -> str:
     """Build the S3 key for a stored video. Public mirror of `_key`."""
     return _key(user_id, folder_path, filename)
+
+
+def upload_fileobj(
+    user_id: str,
+    folder_path: str,
+    filename: str,
+    fileobj: BinaryIO,
+    content_type: Optional[str] = None,
+) -> bool:
+    """Stream a file-like object straight to S3. Returns True on success."""
+    if not is_enabled():
+        return False
+    key = _key(user_id, folder_path, filename)
+    extra: dict = {}
+    if content_type:
+        extra["ContentType"] = content_type
+    else:
+        extra["ContentType"] = _content_type(Path(filename))
+    try:
+        _get_client().upload_fileobj(fileobj, S3_BUCKET, key, ExtraArgs=extra)
+        log.info("s3: uploaded fileobj -> s3://%s/%s", S3_BUCKET, key)
+        return True
+    except (ClientError, BotoCoreError, NoCredentialsError) as exc:
+        log.warning("s3: upload_fileobj failed for %s: %s", key, exc)
+        return False
+
+
+def presign_video_url(
+    user_id: str, folder_path: str, filename: str, expires: int = 900
+) -> Optional[str]:
+    """Convenience wrapper: build the key and presign in one call."""
+    return presign_get_url(_key(user_id, folder_path, filename), expires=expires)
 
 
 def presign_get_url(key: str, expires: int = 900) -> Optional[str]:
@@ -157,22 +265,3 @@ def presign_get_url(key: str, expires: int = 900) -> Optional[str]:
         return None
 
 
-def upload_video_bundle(
-    *,
-    user_id: str,
-    folder_path: str,
-    video_path: Path,
-    cover_path: Optional[Path],
-    meta_path: Optional[Path],
-) -> None:
-    """Mirror a finished local upload to S3 (video + cover + sidecar)."""
-    if not is_enabled():
-        log.debug("s3 disabled, skipping upload of %s", video_path.name)
-        return
-
-    folder = folder_path.strip("/")
-    _put_file(video_path, _key(user_id, folder, video_path.name))
-    if cover_path and cover_path.exists():
-        _put_file(cover_path, _key(user_id, folder, cover_path.name))
-    if meta_path and meta_path.exists():
-        _put_file(meta_path, _key(user_id, folder, meta_path.name))

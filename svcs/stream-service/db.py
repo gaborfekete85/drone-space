@@ -106,6 +106,27 @@ def list_video_meta(user_id: str, folder_path: str) -> dict[str, dict]:
 VALID_VISIBILITY = {"public", "private"}
 
 
+def update_video_folder(video_id: str, new_folder_path: str) -> None:
+    """Move a video row to a different folder. Used by /api/videos/{id}/move."""
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE drone_space.videos SET folder_path = :p WHERE id = :id"
+            ),
+            {"p": new_folder_path, "id": video_id},
+        )
+
+
+def delete_video_row(video_id: str) -> None:
+    """Delete a video row. video_shares.video_id has ON DELETE CASCADE so
+    related shares disappear automatically."""
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("DELETE FROM drone_space.videos WHERE id = :id"),
+            {"id": video_id},
+        )
+
+
 def set_video_visibility(video_id: str, visibility: str) -> None:
     if visibility not in VALID_VISIBILITY:
         raise ValueError(
