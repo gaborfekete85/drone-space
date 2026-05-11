@@ -36,6 +36,11 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# Python bytecode cache
+__pycache__/
+*.pyc
+*.pyo
+
 # locally-stored video volume — bind-mounted into the backend container,
 # not application code, no need to track it.
 app_data/
