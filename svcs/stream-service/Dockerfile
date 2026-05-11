@@ -11,7 +11,7 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py db.py s3.py alembic.ini ./
+COPY main.py db.py s3.py cf_sign.py alembic.ini ./
 COPY alembic ./alembic
 
 RUN mkdir -p ${APP_DATA_ROOT}/videos

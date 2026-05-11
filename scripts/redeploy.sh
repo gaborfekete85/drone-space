@@ -68,6 +68,10 @@ DO_BUILD=0
 helm_passthrough=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -n|--namespace)
+      NAMESPACE="$2"
+      shift
+      ;;
     -b|--build)
       DO_BUILD=1
       ;;
@@ -77,6 +81,10 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+echo "NAMESPACE: $NAMESPACE"
+echo "DO_BUILD: $DO_BUILD"
+
 # Replace $@ with the helm-only args for the rest of the script.
 set -- "${helm_passthrough[@]+"${helm_passthrough[@]}"}"
 
@@ -175,6 +183,7 @@ echo "==> Deploying release '$RELEASE' to namespace '$NAMESPACE' from $CHART_DIR
 
 helm upgrade --install "$RELEASE" "$CHART_DIR" \
   --namespace "$NAMESPACE" \
+  --set-string ingress.host="${NAMESPACE}.findipend.com" \
   "${helm_args[@]}" \
   "$@"
 

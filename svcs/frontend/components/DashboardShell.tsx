@@ -3,9 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useUser } from "@clerk/nextjs";
+import MessagesBell from "./MessagesBell";
 import SideNav, { NAV_ITEMS } from "./SideNav";
 import ThemeToggle from "./ThemeToggle";
 import UserMenu from "./UserMenu";
+import { useUserLocation } from "./useUserLocation";
 
 const EXPANDED_WIDTH = "w-60"; // 240 px — full labels
 const RAIL_WIDTH = "w-14"; //  56 px — icons-only rail
@@ -25,6 +28,8 @@ export default function DashboardShell({
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const mobileNavRef = useRef<HTMLDivElement>(null);
   const pathname = usePathname();
+  const { user } = useUser();
+  const location = useUserLocation(user?.id);
 
   // Close the drop-down on outside click and on route change.
   useEffect(() => {
@@ -170,6 +175,32 @@ export default function DashboardShell({
             )}
           </div>
 
+          {location.label && (
+            <span
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              title={
+                location.latitude != null && location.longitude != null
+                  ? `${location.latitude.toFixed(4)}°, ${location.longitude.toFixed(4)}°`
+                  : undefined
+              }
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-3.5 w-3.5 text-brand-600 dark:text-orange-400"
+                aria-hidden
+              >
+                <path d="M12 22s7-7.58 7-13a7 7 0 10-14 0c0 5.42 7 13 7 13z" />
+                <circle cx="12" cy="9" r="2.5" />
+              </svg>
+              <span className="max-w-[14rem] truncate">{location.label}</span>
+            </span>
+          )}
+          {user?.id && <MessagesBell userId={user.id} />}
           <ThemeToggle />
           <UserMenu />
         </div>

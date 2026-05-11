@@ -320,3 +320,193 @@ If your images are already pushed and you only want to update configuration or c
 ```bash
 scripts/redeploy.sh
 ```
+
+
+# Coversion
+```
+SRC=[SOURCE_FOLDER]/m3u8_streamable2/Elthorn_Dani_cine_2.mov
+OUT=[SOURCE_FOLDER]/m3u8_streamable2/hls
+mkdir -p "$OUT"
+
+ffmpeg -i "$SRC" \
+  -map 0:v:0 -map "0:a?" \
+  -vf "scale=-2:1080:flags=lanczos" \
+  -c:v libx264 \
+  -preset slow \
+  -crf 18 \
+  -tag:v hvc1 \
+  -x265-params "hdr-opt=1:repeat-headers=1:keyint=150:min-keyint=150:scenecut=0:open-gop=0" \
+  -pix_fmt yuv420p \
+  -maxrate 28M \
+  -bufsize 56M \
+  -c:a aac \
+  -b:a 320k \
+  -ac 2 \
+  -f hls \
+  -hls_time 6 \
+  -hls_playlist_type vod \
+  -hls_flags independent_segments \
+  -hls_segment_type mpegts \
+  -hls_segment_filename "$OUT/Elthorn_Dani_cine_2_%03d.ts" \
+  "$OUT/Elthorn_Dani_cine_2.m3u8"
+```
+
+
+```
+ffmpeg -i Elthorn_Dani_cine_2.mov \
+  -c:v libx265 \
+  -tag:v hvc1 \
+  -crf 18 \
+  -preset slow \
+  -pix_fmt yuv420p \
+  -c:a aac -b:a 256k \
+  -f hls \
+  -hls_time 6 \
+  -hls_playlist_type vod \
+  -hls_flags independent_segments \
+  -hls_segment_type fmp4 \
+  -hls_fmp4_init_filename init.mp4 \
+  -hls_segment_filename "segment_%03d.m4s" \
+  Elthorn_Dani_cine_2.m3u8
+  ```
+
+
+
+# Create a new namespace
+
+## Step1: Create Image pull secret to bring the image from ECR
+ - secret name: ecr-regcred
+```
+#!/bin/bash
+
+NAMESPACE="YOUR-NAMESPACE"
+
+# GET ECR PASSWORD
+ECR_SERVER="190016928273.dkr.ecr.eu-central-1.amazonaws.com"
+ECR_REGION="eu-central-1"
+echo "Fetching ECR login password..."
+ECR_PASSWORD=$(aws ecr get-login-password --region "$ECR_REGION")
+
+# DELETE CURRENT SECRET
+echo "  Deleting existing ecr-regcred secret..."
+kubectl delete secret ecr-regcred -n "$NAMESPACE" --ignore-not-found
+
+# CREATE SECRET SECRET
+echo "  Creating new ecr-regcred secret..."
+kubectl create secret docker-registry ecr-regcred \
+  -n "$NAMESPACE" \
+  --docker-server="$ECR_SERVER" \
+  --docker-username=AWS \
+  --docker-password="$ECR_PASSWORD"
+
+  echo "  Done."
+done
+```
+
+## Step2: Create application related secrets
+ - secret name: drone-secrets
+ 
+> Configure the NAMESPACE in your env to your namespace
+> export NAMESPACE=${YOUR_NAME_ID}-drone-space
+
+```
+cd $PROJECT_ROOT
+source .env
+export ENV_FILE="./.env"
+
+CLOUDFRONT_PRIVATE_KEY_B64=$(grep '^CLOUDFRONT_PRIVATE_KEY_B64=' "$ENV_FILE" | cut -d= -f2-)
+# write large value to temp file
+TMP_KEY_FILE=$(mktemp)
+echo "$CLOUDFRONT_PRIVATE_KEY_B64" > "$TMP_KEY_FILE"
+
+kubectl delete secret drone-secrets -n "$NAMESPACE"
+
+kubectl create secret generic drone-secrets \
+  -n "$NAMESPACE" \
+  --from-literal=AWS_ACCESS_KEY_ID="$(
+    grep '^AWS_ACCESS_KEY_ID=' "$ENV_FILE" | cut -d= -f2-
+  )" \
+  --from-literal=AWS_SECRET_ACCESS_KEY="$(
+    grep '^AWS_SECRET_ACCESS_KEY=' "$ENV_FILE" | cut -d= -f2-
+  )" \
+  --from-literal=CLERK_SECRET_KEY="$(
+    grep '^CLERK_SECRET_KEY=' "$ENV_FILE" | cut -d= -f2-
+  )" \
+  --from-literal=DB_PASSWORD="$(
+    grep '^DB_PASSWORD=' "$ENV_FILE" | cut -d= -f2-
+  )" \
+  --from-file=CLOUDFRONT_PRIVATE_KEY_B64="$TMP_KEY_FILE"
+```
+
+## Step3: Authenticate with github cli
+
+> If github cli is not installed, install it first.
+> `brew install gh`
+
+### Login - follow the instructions
+```
+gh auth login
+```
+
+### Testing: 
+```
+gh project item-list 9 --owner gaborfekete85 --format json --limit 200
+
+# If fails
+gh auth refresh -s read:project
+
+ - AI-Ready top pririty tasks for Gabor
+```
+gh project item-list 9 --owner gaborfekete85 --format json --limit 200 \
+  | jq '.items[]
+        | select(.status == "Review")
+        | select((.labels // []) | any(test("Gabor"; "i")))
+        | {id, title, url, body: .content.body, labels}'
+```
+
+```
+gh api graphql -f query='
+query {
+  user(login: "gaborfekete85") {
+    projectV2(number: 9) {
+      items(first: 100) {
+        nodes {
+          id
+          databaseId
+          content {
+            ... on Issue {
+              number
+              title
+              url
+              labels(first: 20) {
+                nodes {
+                  name
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}' | jq '.data.user.projectV2.items.nodes[]
+        | {
+            projectItemId: .id,
+            projectItemDbId: .databaseId,
+            issueNumber: .content.number,
+            title: .content.title,
+            url: .content.url,
+            labels: (.content.labels.nodes | map(.name))
+          }'
+```
+
+ - Tasks in Review
+```
+gh project item-list "$proj" --owner "$owner" --format json --limit 200 \
+  | jq --arg s "$col" --arg l "$label" '
+      [.items[]
+       | select(.status == $s)
+       | select((.labels // []) | any(test($l; "i")))
+      ] | length
+    '
+```

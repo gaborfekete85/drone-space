@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 
 type Props = {
   open: boolean;
@@ -10,7 +11,12 @@ type Props = {
   onUploaded: () => void;
 };
 
-type DroneType = "video" | "fpv";
+type DroneOption = {
+  id: string;
+  brand: string;
+  model: string;
+  nickname: string | null;
+};
 
 type FormState = {
   location: string;
@@ -19,7 +25,7 @@ type FormState = {
   height: string;
   tags: string;
   takenAt: string;
-  droneType: DroneType;
+  droneId: string;
 };
 
 const EMPTY_FORM: FormState = {
@@ -29,7 +35,7 @@ const EMPTY_FORM: FormState = {
   height: "",
   tags: "",
   takenAt: "",
-  droneType: "video",
+  droneId: "",
 };
 
 export default function UploadVideoModal({
@@ -47,8 +53,41 @@ export default function UploadVideoModal({
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [drones, setDrones] = useState<DroneOption[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
+
+  // Load the user's drones each time the modal opens — they may have just
+  // added one in another tab.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    fetch(`/api/backend/drones?user_id=${encodeURIComponent(userId)}`, {
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`failed (${r.status})`))))
+      .then((j) => {
+        if (cancelled) return;
+        const list: DroneOption[] = (j.drones ?? []).map((d: DroneOption) => ({
+          id: d.id,
+          brand: d.brand,
+          model: d.model,
+          nickname: d.nickname,
+        }));
+        setDrones(list);
+        // Auto-select the only drone — the user shouldn't have to pick when
+        // there's no choice.
+        if (list.length === 1) {
+          setForm((s) => (s.droneId ? s : { ...s, droneId: list[0].id }));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setDrones([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, userId]);
 
   useEffect(() => {
     if (!open) {
@@ -113,35 +152,62 @@ export default function UploadVideoModal({
       setError("Choose a video first.");
       return;
     }
+    if (!form.droneId) {
+      setError("Pick a drone — register one if you haven't yet.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setProgress(0);
 
-    const fd = new FormData();
-    fd.append("user_id", userId);
-    fd.append("path", path);
-    fd.append("file", file);
-    if (cover) fd.append("cover", cover);
-    fd.append(
-      "metadata",
-      JSON.stringify({
-        location: form.location.trim() || null,
-        latitude: form.latitude ? Number(form.latitude) : null,
-        longitude: form.longitude ? Number(form.longitude) : null,
-        height_m: form.height ? Number(form.height) : null,
-        tags: form.tags
-          .split(",")
-          .map((t) => t.trim())
-          .filter(Boolean),
-        taken_at: form.takenAt || null,
-        drone_type: form.droneType,
-      })
-    );
+    const metadata = {
+      location: form.location.trim() || null,
+      latitude: form.latitude ? Number(form.latitude) : null,
+      longitude: form.longitude ? Number(form.longitude) : null,
+      height_m: form.height ? Number(form.height) : null,
+      tags: form.tags
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean),
+      taken_at: form.takenAt || null,
+      drone_id: form.droneId || null,
+    };
 
     try {
+      // Step 1 — reserve the filename and get a presigned PUT URL. Tiny
+      // request; if the server doesn't support direct uploads (volume mode)
+      // we fall through to the legacy multipart endpoint.
+      const initRes = await fetch("/api/backend/upload/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          path,
+          filename: file.name,
+          drone_id: form.droneId,
+        }),
+      });
+      if (initRes.status === 501) {
+        await uploadLegacy(file, cover, metadata);
+        return;
+      }
+      if (!initRes.ok) {
+        const j = await initRes.json().catch(() => ({}));
+        throw new Error(j.detail ?? `init failed (${initRes.status})`);
+      }
+      const init = (await initRes.json()) as {
+        final_name: string;
+        presigned_url: string;
+      };
+
+      // Step 2 — PUT bytes directly to S3 via XHR so we can track progress.
+      // This is the big one; legacy proxy timeouts on the way to the Python
+      // backend don't apply since the request bypasses it entirely.
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/api/backend/upload");
+        xhr.open("PUT", init.presigned_url);
+        // Match the file's MIME so S3 stores a useful Content-Type.
+        xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
             setProgress(Math.round((e.loaded / e.total) * 100));
@@ -149,18 +215,34 @@ export default function UploadVideoModal({
         };
         xhr.onload = () => {
           if (xhr.status >= 200 && xhr.status < 300) resolve();
-          else {
-            try {
-              const j = JSON.parse(xhr.responseText);
-              reject(new Error(j.detail ?? `upload failed (${xhr.status})`));
-            } catch {
-              reject(new Error(`upload failed (${xhr.status})`));
-            }
-          }
+          else
+            reject(
+              new Error(
+                `S3 upload failed (${xhr.status}). If this is a CORS error, configure the bucket to allow PUT from this origin.`
+              )
+            );
         };
-        xhr.onerror = () => reject(new Error("network error"));
-        xhr.send(fd);
+        xhr.onerror = () => reject(new Error("network error during S3 PUT"));
+        xhr.send(file);
       });
+
+      // Step 3 — finalize: backend HEADs the S3 object, writes the cover +
+      // meta sidecars, inserts the DB row.
+      const fd = new FormData();
+      fd.append("user_id", userId);
+      fd.append("path", path);
+      fd.append("final_name", init.final_name);
+      fd.append("metadata", JSON.stringify(metadata));
+      if (cover) fd.append("cover", cover);
+      const finRes = await fetch("/api/backend/upload/finalize", {
+        method: "POST",
+        body: fd,
+      });
+      if (!finRes.ok) {
+        const j = await finRes.json().catch(() => ({}));
+        throw new Error(j.detail ?? `finalize failed (${finRes.status})`);
+      }
+
       onUploaded();
       onClose();
     } catch (e) {
@@ -168,6 +250,46 @@ export default function UploadVideoModal({
     } finally {
       setBusy(false);
     }
+  }
+
+  // Volume-mode fallback — proxies bytes through the backend the old way.
+  // Only reachable when /api/upload/init returns 501.
+  async function uploadLegacy(
+    file: File,
+    cover: File | null,
+    metadata: Record<string, unknown>
+  ) {
+    const fd = new FormData();
+    fd.append("user_id", userId);
+    fd.append("path", path);
+    fd.append("file", file);
+    if (cover) fd.append("cover", cover);
+    fd.append("metadata", JSON.stringify(metadata));
+
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/backend/upload");
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          setProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
+        else {
+          try {
+            const j = JSON.parse(xhr.responseText);
+            reject(new Error(j.detail ?? `upload failed (${xhr.status})`));
+          } catch {
+            reject(new Error(`upload failed (${xhr.status})`));
+          }
+        }
+      };
+      xhr.onerror = () => reject(new Error("network error"));
+      xhr.send(fd);
+    });
+    onUploaded();
+    onClose();
   }
 
   const inputCls =
@@ -302,7 +424,52 @@ export default function UploadVideoModal({
             />
           </div>
 
+          {drones !== null && drones.length === 0 && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+              <p className="font-semibold">You haven't added any drones yet.</p>
+              <p className="mt-1 text-xs text-amber-800/90 dark:text-amber-200/80">
+                You need to register the device you flew with before uploading
+                footage.
+              </p>
+              <Link
+                href="/dashboard/drones"
+                onClick={onClose}
+                className="mt-3 inline-flex items-center gap-2 rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-amber-700"
+              >
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                Add your drone
+              </Link>
+            </div>
+          )}
+
           <div className="grid gap-3 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <Field label="Drone *">
+                <select
+                  value={form.droneId}
+                  onChange={(e) => update("droneId", e.target.value)}
+                  disabled={!drones || drones.length === 0}
+                  className={inputCls + " disabled:opacity-60"}
+                >
+                  <option value="">
+                    {drones === null
+                      ? "Loading…"
+                      : drones.length === 0
+                        ? "No drones registered"
+                        : "Select a drone"}
+                  </option>
+                  {(drones ?? []).map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.brand} {d.model}
+                      {d.nickname ? ` · "${d.nickname}"` : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
             <Field label="Location">
               <input
                 type="text"
@@ -312,54 +479,49 @@ export default function UploadVideoModal({
                 className={inputCls}
               />
             </Field>
-            <Field label="Drone type">
-              <select
-                value={form.droneType}
-                onChange={(e) => update("droneType", e.target.value as DroneType)}
-                className={inputCls}
-              >
-                <option value="video">Video drone</option>
-                <option value="fpv">FPV drone</option>
-              </select>
-            </Field>
-            <Field label="Latitude">
-              <input
-                type="number"
-                step="any"
-                value={form.latitude}
-                onChange={(e) => update("latitude", e.target.value)}
-                placeholder="36.7213"
-                className={inputCls}
-              />
-            </Field>
-            <Field label="Longitude">
-              <input
-                type="number"
-                step="any"
-                value={form.longitude}
-                onChange={(e) => update("longitude", e.target.value)}
-                placeholder="-4.4214"
-                className={inputCls}
-              />
-            </Field>
-            <Field label="Height (meters)">
-              <input
-                type="number"
-                step="any"
-                value={form.height}
-                onChange={(e) => update("height", e.target.value)}
-                placeholder="120"
-                className={inputCls}
-              />
-            </Field>
-            <Field label="Date / time of flight">
+            <Field label="Flying date">
               <input
                 type="datetime-local"
                 value={form.takenAt}
                 onChange={(e) => update("takenAt", e.target.value)}
                 className={inputCls}
               />
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                When the footage was actually shot.
+              </span>
             </Field>
+            <div className="sm:col-span-2 grid gap-3 sm:grid-cols-3">
+              <Field label="Latitude">
+                <input
+                  type="number"
+                  step="any"
+                  value={form.latitude}
+                  onChange={(e) => update("latitude", e.target.value)}
+                  placeholder="36.7213"
+                  className={inputCls}
+                />
+              </Field>
+              <Field label="Longitude">
+                <input
+                  type="number"
+                  step="any"
+                  value={form.longitude}
+                  onChange={(e) => update("longitude", e.target.value)}
+                  placeholder="-4.4214"
+                  className={inputCls}
+                />
+              </Field>
+              <Field label="Height (meters)">
+                <input
+                  type="number"
+                  step="any"
+                  value={form.height}
+                  onChange={(e) => update("height", e.target.value)}
+                  placeholder="120"
+                  className={inputCls}
+                />
+              </Field>
+            </div>
             <div className="sm:col-span-2">
               <Field label="Tags (comma-separated)">
                 <input
@@ -406,7 +568,7 @@ export default function UploadVideoModal({
           <button
             type="button"
             onClick={submit}
-            disabled={busy || !file}
+            disabled={busy || !file || !form.droneId}
             className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-orange-500 dark:hover:bg-orange-600"
           >
             {busy ? "Uploading…" : "Upload"}

@@ -92,13 +92,14 @@ storage:
 ingress:
   enabled: true
   className: nginx
-  host: drone-space.rewura.com
+  host: drone-space.findipend.com
   annotations:
     # Allows large video uploads without triggering a 413 Request Entity Too Large
     nginx.ingress.kubernetes.io/proxy-body-size: "10000m"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
   tls:
-    enabled: false
-    secretName: ""
+      enabled: true
+      secretName: "findipend-tls"
 
 # ---------------------------------------------------------------------------
 # Non-secret env, shared via a ConfigMap. Populated from .env by
