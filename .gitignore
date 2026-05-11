@@ -3,7 +3,9 @@ node_modules/
 .pnp
 .pnp.js
 .env
-.claude
+.claude/worktrees
+.claude/settings.local.json
+.claude/skills/github-ai-task-runner/config.json
 
 # testing
 coverage/

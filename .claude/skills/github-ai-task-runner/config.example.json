@@ -1,0 +1,13 @@
+{
+  "owner": "gaborfekete85",
+  "repo": "gaborfekete85",
+  "project_number": 1,
+  "ready_column": "AI_READY",
+  "in_progress_column": "In Progress",
+  "ready_for_review_column": "Review",
+  "required_label": "Gabor",
+  "started_by": "Claude AI",
+  "branch_prefix": "feature",
+  "deploy_script": ".claude/skills/github-ai-task-runner/scripts/deploy_issue.sh",
+  "deploy_namespace": "gabor-drone-space"
+}
