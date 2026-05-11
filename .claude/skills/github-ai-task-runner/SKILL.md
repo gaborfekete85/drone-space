@@ -116,6 +116,7 @@ echo "title : $TITLE"
   - Commit message: Short one line summary of the changes
   - Push the changes to the branch
   - Open a pull request
+  - The PR body MUST include `Closes #${ISSUE_NUMBER}` so GitHub links the PR to the issue. When the PR is merged GitHub will automatically close the issue and project automation will move it to Done.
 
 ### Step9: Deploy the current change: 
  - Enter into the .claude/worktrees/DRN-${ISSUE_NUMBER} folder and deploy from the folder where the changes has been made ... as a docker image needs to be created from the new content including the changes from the worktree
