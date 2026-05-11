@@ -235,6 +235,68 @@ def presign_video_url(
     return presign_get_url(_key(user_id, folder_path, filename), expires=expires)
 
 
+def presign_put_url(
+    user_id: str,
+    folder_path: str,
+    filename: str,
+    expires: int = 3600,
+) -> Optional[str]:
+    """Generate a temporary PUT URL so the browser uploads bytes directly to
+    S3, bypassing the Python backend. This is the only sane path for big
+    videos — pushing 4 GB through Starlette buffers it to disk first, then
+    re-streams to S3, doubling the wall-clock and exposing the upload to
+    every proxy timeout in the chain.
+
+    The bucket needs CORS configured to allow PUT from the frontend origin
+    (see operator notes in the README) — without it the browser blocks the
+    PUT before it leaves.
+
+    Content-Type is intentionally NOT included in the signature; the
+    browser will set it from the File MIME type and we don't want a 403
+    over a header mismatch. S3 stores whatever Content-Type the PUT sends.
+    """
+    if not is_enabled():
+        return None
+    key = _key(user_id, folder_path, filename)
+    try:
+        signer = boto3.client(
+            "s3",
+            region_name=S3_REGION,
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "virtual"},
+            ),
+        )
+        return signer.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={"Bucket": S3_BUCKET, "Key": key},
+            ExpiresIn=expires,
+            HttpMethod="PUT",
+        )
+    except (ClientError, BotoCoreError, NoCredentialsError) as exc:
+        log.warning("s3: presign PUT failed for %s: %s", key, exc)
+        return None
+
+
+def head_object(
+    user_id: str, folder_path: str, filename: str
+) -> Optional[dict]:
+    """HEAD an object to confirm it exists after a presigned PUT. Returns
+    `{size, content_type}` on success, None if missing or on error."""
+    if not is_enabled():
+        return None
+    key = _key(user_id, folder_path, filename)
+    try:
+        resp = _get_client().head_object(Bucket=S3_BUCKET, Key=key)
+        return {
+            "size": int(resp.get("ContentLength") or 0),
+            "content_type": resp.get("ContentType"),
+        }
+    except (ClientError, BotoCoreError, NoCredentialsError) as exc:
+        log.warning("s3: head_object failed for %s: %s", key, exc)
+        return None
+
+
 def presign_get_url(key: str, expires: int = 900) -> Optional[str]:
     """Generate a temporary GET URL for an S3 object.
 

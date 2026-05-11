@@ -5,6 +5,12 @@ metadata:
   name: drone-app-data
   labels:
     {{- include "drone.labels" . | nindent 4 }}
+  annotations:
+    # Keep the PVC across `helm uninstall` so the cover/meta sidecars on
+    # the volume survive a release teardown. Without this, the next
+    # `helm install` provisions a fresh empty volume and listings go
+    # blank until S3 sidecars are re-synced (see scripts/app_data_sync.yaml).
+    "helm.sh/resource-policy": keep
 spec:
   accessModes:
     - ReadWriteOnce

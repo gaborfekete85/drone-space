@@ -1,0 +1,59 @@
+# One-shot sync of cover + meta sidecars from S3 into the backend's
+# /app_data PVC. Used after a fresh PVC (or PVC-loss event) to repopulate
+# the metadata index for a single user — without re-uploading any video.
+#
+# usage:
+#   sed 's/__USER__/<clerk_user_id>/' scripts/app_data_sync.yaml | kubectl apply -f -
+#   kubectl -n drone-space wait --for=jsonpath='{.status.phase}=Succeeded' pod/app-data-sync --timeout=120s
+#   kubectl -n drone-space logs app-data-sync
+#   kubectl -n drone-space delete pod app-data-sync
+#
+# What it does NOT do: it never touches the .mp4 files. Those stay in S3
+# and CloudFront/check_access-presigned URL playback continues to resolve
+# them straight from there.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-data-sync
+  namespace: drone-space
+spec:
+  restartPolicy: Never
+  volumes:
+    - name: app-data
+      persistentVolumeClaim:
+        claimName: drone-app-data
+  containers:
+    - name: sync
+      image: amazon/aws-cli:latest
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: drone-secrets
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: drone-secrets
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_DEFAULT_REGION
+          value: eu-central-1
+        - name: USER_ID
+          value: __USER__
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -e
+          mkdir -p "/app_data/videos/${USER_ID}"
+          aws s3 sync \
+            "s3://drones-ch-store-dev-1/${USER_ID}/" \
+            "/app_data/videos/${USER_ID}/" \
+            --exclude '*' \
+            --include '*.meta.json' \
+            --include '*_cover.jpg'
+          echo
+          echo "=== synced tree under /app_data/videos/${USER_ID} ==="
+          find "/app_data/videos/${USER_ID}" \( -type f -o -type d \) | sort
+      volumeMounts:
+        - name: app-data
+          mountPath: /app_data

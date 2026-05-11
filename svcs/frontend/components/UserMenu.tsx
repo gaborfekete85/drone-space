@@ -1,13 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useClerk, useUser } from "@clerk/nextjs";
 
 export default function UserMenu() {
   const { user, isLoaded } = useUser();
   const { signOut } = useClerk();
   const [open, setOpen] = useState(false);
+  const [customAvatarUrl, setCustomAvatarUrl] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const pathname = usePathname();
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
@@ -18,6 +22,48 @@ export default function UserMenu() {
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
+
+  const fetchAvatar = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const res = await fetch(
+        `/api/backend/profile?user_id=${encodeURIComponent(user.id)}`,
+        { cache: "no-store" }
+      );
+      if (!res.ok) return;
+      const j = await res.json();
+      const p = j.profile;
+      if (p?.has_profile_image && p?.updated_at) {
+        // ?t=<updated_at> is a cache buster — replacing the photo bumps
+        // updated_at so the browser re-fetches instead of showing a stale copy.
+        setCustomAvatarUrl(
+          `/api/backend/profile/${encodeURIComponent(user.id)}/photo?user_id=${encodeURIComponent(user.id)}&t=${encodeURIComponent(p.updated_at)}`
+        );
+      } else {
+        setCustomAvatarUrl(null);
+      }
+    } catch {
+      // Header chrome shouldn't yell at the user — fall back to Clerk image.
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    fetchAvatar();
+  }, [fetchAvatar]);
+
+  // Refresh whenever the route changes — the user may have just uploaded a
+  // new photo on /dashboard/profile and is now navigating elsewhere.
+  useEffect(() => {
+    fetchAvatar();
+  }, [pathname, fetchAvatar]);
+
+  // Refresh when the menu opens too, so the avatar is always current the
+  // first thing the user sees if they pop it open.
+  useEffect(() => {
+    if (open) fetchAvatar();
+  }, [open, fetchAvatar]);
+
+  const avatarUrl = customAvatarUrl || user?.imageUrl || "";
 
   const initial =
     (isLoaded &&
@@ -35,10 +81,10 @@ export default function UserMenu() {
         aria-expanded={open}
         className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-1 pr-3 shadow-sm hover:bg-slate-50 transition dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
       >
-        {user?.imageUrl ? (
+        {avatarUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={user.imageUrl}
+            src={avatarUrl}
             alt="User avatar"
             className="h-8 w-8 rounded-full object-cover"
           />
@@ -70,22 +116,14 @@ export default function UserMenu() {
           role="menu"
           className="absolute right-0 mt-2 w-48 rounded-lg border border-slate-200 bg-white shadow-lg ring-1 ring-black/5 overflow-hidden z-50 dark:border-slate-700 dark:bg-slate-800 dark:ring-white/5"
         >
-          <button
-            type="button"
+          <Link
+            href="/dashboard/profile"
             role="menuitem"
             onClick={() => setOpen(false)}
             className="block w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
           >
-            Settings
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => setOpen(false)}
-            className="block w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
-          >
-            Account
-          </button>
+            Profile
+          </Link>
           <div className="border-t border-slate-100 dark:border-slate-700" />
           <button
             type="button"

@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import UserBadge from "./UserBadge";
+
+type ShareableUser = {
+  id: string;
+  name: string;
+  email: string;
+  imageUrl: string;
+};
 
 type SharedVideo = {
   id: string;
@@ -30,6 +38,7 @@ type ApiResponse = {
 
 export default function SharedWithMe({ userId }: { userId: string }) {
   const [videos, setVideos] = useState<SharedVideo[]>([]);
+  const [users, setUsers] = useState<ShareableUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -39,21 +48,27 @@ export default function SharedWithMe({ userId }: { userId: string }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/backend/shared?user_id=${encodeURIComponent(userId)}`,
-        { cache: "no-store" }
-      );
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.detail ?? `failed (${res.status})`);
+      const [vRes, uRes] = await Promise.all([
+        fetch(`/api/backend/shared?user_id=${encodeURIComponent(userId)}`, {
+          cache: "no-store",
+        }),
+        fetch("/api/users", { cache: "no-store" }),
+      ]);
+      if (!vRes.ok) {
+        const j = await vRes.json().catch(() => ({}));
+        throw new Error(j.detail ?? `failed (${vRes.status})`);
       }
-      const j: ApiResponse = await res.json();
+      const j: ApiResponse = await vRes.json();
       setVideos(
         (j.videos ?? []).map((v) => ({
           ...v,
           size: v.size ?? v.size_bytes ?? 0,
         })) as SharedVideo[]
       );
+      if (uRes.ok) {
+        const uj = await uRes.json();
+        setUsers(uj.users ?? []);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load");
     } finally {
@@ -64,6 +79,12 @@ export default function SharedWithMe({ userId }: { userId: string }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  const usersById = useMemo(() => {
+    const m = new Map<string, ShareableUser>();
+    for (const u of users) m.set(u.id, u);
+    return m;
+  }, [users]);
 
   async function play(video: SharedVideo) {
     setPlayError(null);
@@ -164,8 +185,18 @@ export default function SharedWithMe({ userId }: { userId: string }) {
                     in <span className="font-mono">/{v.folder_path || "(root)"}</span>
                   </div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">
-                    Shared by{" "}
-                    <span className="font-mono">{v.shared_by_user_id}</span>
+                    <UserBadge
+                      user={{
+                        id: v.shared_by_user_id,
+                        name: usersById.get(v.shared_by_user_id)?.name,
+                        email: usersById.get(v.shared_by_user_id)?.email,
+                        imageUrl: usersById.get(v.shared_by_user_id)?.imageUrl,
+                      }}
+                      currentUserId={userId}
+                      prefix="by "
+                      size={20}
+                      className="text-xs"
+                    />
                   </div>
                   {v.location && (
                     <div className="text-xs text-slate-600 dark:text-slate-300">
@@ -212,7 +243,7 @@ export default function SharedWithMe({ userId }: { userId: string }) {
             onClick={(e) => e.stopPropagation()}
           >
             <span className="mr-1 font-semibold text-slate-400">
-              S3 presigned (temporal url):
+              Cloudfront signed URL:
             </span>
             <span className="break-all font-mono">{previewUrl}</span>
           </div>

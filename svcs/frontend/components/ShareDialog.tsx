@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 export type ShareTarget =
   | {
@@ -17,6 +23,13 @@ type Share = {
   created_at: string;
 };
 
+type ShareableUser = {
+  id: string;
+  name: string;
+  email: string;
+  imageUrl: string;
+};
+
 type Props = {
   open: boolean;
   onClose: () => void;
@@ -25,6 +38,37 @@ type Props = {
   /** Called whenever a mutation succeeds (visibility change, share, unshare). */
   onUpdate?: () => void;
 };
+
+function Avatar({ user, size = 28 }: { user: ShareableUser; size?: number }) {
+  const initials = (user.name || user.email || "?")
+    .split(/\s+/)
+    .map((s) => s[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+  if (user.imageUrl) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return (
+      <img
+        src={user.imageUrl}
+        alt=""
+        width={size}
+        height={size}
+        className="shrink-0 rounded-full object-cover"
+        style={{ width: size, height: size }}
+      />
+    );
+  }
+  return (
+    <span
+      className="flex shrink-0 items-center justify-center rounded-full bg-slate-200 text-[10px] font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-200"
+      style={{ width: size, height: size }}
+    >
+      {initials}
+    </span>
+  );
+}
 
 export default function ShareDialog({
   open,
@@ -37,10 +81,16 @@ export default function ShareDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [newUserId, setNewUserId] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">(
     target.kind === "video" ? target.visibility : "private"
   );
+
+  const [users, setUsers] = useState<ShareableUser[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [query, setQuery] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(0);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
 
   const sharesUrl = useCallback(() => {
     const u = new URL("/api/backend/x", "http://placeholder");
@@ -69,14 +119,31 @@ export default function ShareDialog({
     }
   }, [sharesUrl]);
 
+  const loadUsers = useCallback(async () => {
+    setUsersLoading(true);
+    try {
+      const res = await fetch("/api/users", { cache: "no-store" });
+      if (!res.ok) throw new Error(`failed to load users (${res.status})`);
+      const j = await res.json();
+      setUsers(j.users ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "failed to load users");
+    } finally {
+      setUsersLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (open) {
       refresh();
-      setNewUserId("");
+      loadUsers();
+      setQuery("");
+      setPickerOpen(false);
+      setActiveIdx(0);
       setError(null);
       if (target.kind === "video") setVisibility(target.visibility);
     }
-  }, [open, refresh, target]);
+  }, [open, refresh, loadUsers, target]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -85,6 +152,43 @@ export default function ShareDialog({
     if (open) document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [open, busy, onClose]);
+
+  useEffect(() => {
+    function onDocMouseDown(e: MouseEvent) {
+      if (!pickerRef.current) return;
+      if (!pickerRef.current.contains(e.target as Node)) {
+        setPickerOpen(false);
+      }
+    }
+    if (pickerOpen) document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [pickerOpen]);
+
+  const usersById = useMemo(() => {
+    const m = new Map<string, ShareableUser>();
+    for (const u of users) m.set(u.id, u);
+    return m;
+  }, [users]);
+
+  const sharedIds = useMemo(
+    () => new Set(shares.map((s) => s.shared_with_user_id)),
+    [shares]
+  );
+
+  const filteredUsers = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const base = users.filter((u) => !sharedIds.has(u.id));
+    if (!q) return base;
+    return base.filter(
+      (u) =>
+        u.name.toLowerCase().includes(q) ||
+        u.email.toLowerCase().includes(q)
+    );
+  }, [users, sharedIds, query]);
+
+  useEffect(() => {
+    setActiveIdx(0);
+  }, [query, pickerOpen]);
 
   if (!open) return null;
 
@@ -114,8 +218,8 @@ export default function ShareDialog({
     }
   }
 
-  async function addShare() {
-    const u = newUserId.trim();
+  async function addShare(sharedWithUserId: string) {
+    const u = sharedWithUserId.trim();
     if (!u) return;
     setBusy(true);
     setError(null);
@@ -137,7 +241,8 @@ export default function ShareDialog({
         const j = await res.json().catch(() => ({}));
         throw new Error(j.detail ?? `failed (${res.status})`);
       }
-      setNewUserId("");
+      setQuery("");
+      setPickerOpen(false);
       await refresh();
       onUpdate?.();
     } catch (e) {
@@ -183,6 +288,26 @@ export default function ShareDialog({
     }
   }
 
+  function onPickerKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setPickerOpen(true);
+      setActiveIdx((i) => Math.min(i + 1, Math.max(filteredUsers.length - 1, 0)));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const u = filteredUsers[activeIdx];
+      if (u) addShare(u.id);
+    } else if (e.key === "Escape") {
+      if (pickerOpen) {
+        e.preventDefault();
+        setPickerOpen(false);
+      }
+    }
+  }
+
   const title =
     target.kind === "video"
       ? `Share "${target.videoName}"`
@@ -197,8 +322,8 @@ export default function ShareDialog({
         if (e.target === e.currentTarget && !busy) onClose();
       }}
     >
-      <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+      <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex items-center justify-between rounded-t-2xl border-b border-slate-200 px-5 py-4 dark:border-slate-800">
           <h2 className="truncate text-lg font-semibold text-slate-900 dark:text-white">
             {title}
           </h2>
@@ -252,25 +377,86 @@ export default function ShareDialog({
               Shared with
             </h3>
 
-            <div className="mt-2 flex gap-2">
+            <div className="relative mt-2" ref={pickerRef}>
               <input
                 type="text"
-                value={newUserId}
-                onChange={(e) => setNewUserId(e.target.value)}
-                placeholder="Clerk user ID (e.g. user_2NiW…)"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") addShare();
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setPickerOpen(true);
                 }}
-                className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-orange-400 dark:focus:ring-orange-400/30"
+                onFocus={() => setPickerOpen(true)}
+                onKeyDown={onPickerKeyDown}
+                placeholder={
+                  usersLoading ? "Loading users…" : "Search by name or email…"
+                }
+                disabled={usersLoading}
+                aria-autocomplete="list"
+                aria-expanded={pickerOpen}
+                className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-9 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-orange-400 dark:focus:ring-orange-400/30"
               />
               <button
                 type="button"
-                onClick={addShare}
-                disabled={busy || !newUserId.trim()}
-                className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-orange-500 dark:hover:bg-orange-600"
+                tabIndex={-1}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => setPickerOpen((v) => !v)}
+                aria-label={pickerOpen ? "Close user list" : "Open user list"}
+                className="absolute inset-y-0 right-0 flex items-center px-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
               >
-                Share
+                <svg
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  className={
+                    "h-4 w-4 transition-transform " +
+                    (pickerOpen ? "rotate-180" : "")
+                  }
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.25 4.39a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z"
+                    clipRule="evenodd"
+                  />
+                </svg>
               </button>
+
+              {pickerOpen && !usersLoading && (
+                <div className="absolute left-0 right-0 z-10 mt-1 max-h-96 overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+                  {filteredUsers.length === 0 ? (
+                    <div className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
+                      {users.length === 0
+                        ? "No users available."
+                        : "No matches."}
+                    </div>
+                  ) : (
+                    filteredUsers.map((u, idx) => (
+                      <button
+                        type="button"
+                        key={u.id}
+                        onMouseEnter={() => setActiveIdx(idx)}
+                        onClick={() => addShare(u.id)}
+                        disabled={busy}
+                        className={
+                          "flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition " +
+                          (idx === activeIdx
+                            ? "bg-slate-100 dark:bg-slate-800"
+                            : "hover:bg-slate-50 dark:hover:bg-slate-800/60")
+                        }
+                      >
+                        <Avatar user={u} />
+                        <span className="min-w-0 flex-1 truncate text-slate-900 dark:text-slate-100">
+                          <span className="font-medium">{u.name}</span>
+                          {u.email && (
+                            <span className="text-slate-500 dark:text-slate-400">
+                              {" "}
+                              ({u.email})
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
 
             <ul className="mt-3 space-y-1">
@@ -283,24 +469,48 @@ export default function ShareDialog({
                   Not shared with anyone yet.
                 </li>
               ) : (
-                shares.map((s) => (
-                  <li
-                    key={s.shared_with_user_id}
-                    className="flex items-center justify-between gap-3 rounded-md border border-slate-200 px-3 py-2 text-sm dark:border-slate-700"
-                  >
-                    <span className="truncate font-mono text-xs text-slate-700 dark:text-slate-200">
-                      {s.shared_with_user_id}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeShare(s.shared_with_user_id)}
-                      disabled={busy}
-                      className="text-xs font-medium text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+                shares.map((s) => {
+                  const u = usersById.get(s.shared_with_user_id);
+                  return (
+                    <li
+                      key={s.shared_with_user_id}
+                      className="flex items-center justify-between gap-3 rounded-md border border-slate-200 px-3 py-2 text-sm dark:border-slate-700"
                     >
-                      Remove
-                    </button>
-                  </li>
-                ))
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        {u ? (
+                          <Avatar user={u} />
+                        ) : (
+                          <span className="h-7 w-7 shrink-0 rounded-full bg-slate-200 dark:bg-slate-700" />
+                        )}
+                        <span className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">
+                          {u ? (
+                            <>
+                              <span className="font-medium">{u.name}</span>
+                              {u.email && (
+                                <span className="text-slate-500 dark:text-slate-400">
+                                  {" "}
+                                  ({u.email})
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            <span className="font-mono text-xs">
+                              {s.shared_with_user_id}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeShare(s.shared_with_user_id)}
+                        disabled={busy}
+                        className="text-xs font-medium text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  );
+                })
               )}
             </ul>
           </section>
@@ -312,7 +522,7 @@ export default function ShareDialog({
           )}
         </div>
 
-        <div className="flex items-center justify-end border-t border-slate-200 bg-slate-50 px-5 py-3 dark:border-slate-800 dark:bg-slate-900/60">
+        <div className="flex items-center justify-end rounded-b-2xl border-t border-slate-200 bg-slate-50 px-5 py-3 dark:border-slate-800 dark:bg-slate-900/60">
           <button
             type="button"
             onClick={onClose}
@@ -326,3 +536,4 @@ export default function ShareDialog({
     </div>
   );
 }
+

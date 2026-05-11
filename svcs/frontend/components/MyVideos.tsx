@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ConfirmDialog, PromptDialog } from "./ConfirmDialog";
 import MoveVideoDialog from "./MoveVideoDialog";
 import ShareDialog, { type ShareTarget } from "./ShareDialog";
 import UploadVideoModal from "./UploadVideoModal";
@@ -46,6 +47,12 @@ export default function MyVideos({ userId }: Props) {
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
   const [moveTarget, setMoveTarget] = useState<VideoEntry | null>(null);
   const [trashTooltipPos, setTrashTooltipPos] = useState<{ x: number; y: number } | null>(null);
+  const [createFolderOpen, setCreateFolderOpen] = useState(false);
+  const [createFolderBusy, setCreateFolderBusy] = useState(false);
+  const [deleteVideoTarget, setDeleteVideoTarget] = useState<VideoEntry | null>(null);
+  const [deleteVideoBusy, setDeleteVideoBusy] = useState(false);
+  const [deleteFolderOpen, setDeleteFolderOpen] = useState(false);
+  const [deleteFolderBusy, setDeleteFolderBusy] = useState(false);
 
   async function openVideo(video: VideoEntry) {
     setPlayError(null);
@@ -108,29 +115,31 @@ export default function MyVideos({ userId }: Props) {
     setPath(data.parts.slice(0, idx + 1).join("/"));
   }
 
-  async function createFolder() {
-    const name = window.prompt("New folder name");
-    if (!name) return;
+  async function submitCreateFolder(name: string) {
+    setCreateFolderBusy(true);
     try {
       const res = await fetch("/api/backend/folders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId, path, name: name.trim() }),
+        body: JSON.stringify({ user_id: userId, path, name }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.detail ?? `failed (${res.status})`);
       }
+      setCreateFolderOpen(false);
       await load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "failed to create folder");
+      setError(e instanceof Error ? e.message : "failed to create folder");
+    } finally {
+      setCreateFolderBusy(false);
     }
   }
 
-  async function deleteVideo(video: VideoEntry) {
-    if (!video.id) return;
-    if (!window.confirm(`Permanently delete "${video.name}"? This cannot be undone.`))
-      return;
+  async function confirmDeleteVideo() {
+    const video = deleteVideoTarget;
+    if (!video?.id) return;
+    setDeleteVideoBusy(true);
     try {
       const res = await fetch(
         `/api/backend/videos/${encodeURIComponent(video.id)}?user_id=${encodeURIComponent(userId)}`,
@@ -140,16 +149,18 @@ export default function MyVideos({ userId }: Props) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.detail ?? `failed (${res.status})`);
       }
+      setDeleteVideoTarget(null);
       await load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "failed to delete video");
+      setError(e instanceof Error ? e.message : "failed to delete video");
+    } finally {
+      setDeleteVideoBusy(false);
     }
   }
 
-  async function deleteCurrentFolder() {
-    if (!path) return; // root cannot be deleted
-    const name = data?.parts[data.parts.length - 1] ?? path;
-    if (!window.confirm(`Delete empty folder "${name}"? It must be empty.`)) return;
+  async function confirmDeleteFolder() {
+    if (!path) return;
+    setDeleteFolderBusy(true);
     try {
       const res = await fetch(
         `/api/backend/folders?user_id=${encodeURIComponent(userId)}&path=${encodeURIComponent(path)}`,
@@ -159,11 +170,13 @@ export default function MyVideos({ userId }: Props) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.detail ?? `failed (${res.status})`);
       }
-      // Navigate up to the parent folder; load() runs via useEffect on path change.
+      setDeleteFolderOpen(false);
       const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
       setPath(parent);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "failed to delete folder");
+      setError(e instanceof Error ? e.message : "failed to delete folder");
+    } finally {
+      setDeleteFolderBusy(false);
     }
   }
 
@@ -203,7 +216,7 @@ export default function MyVideos({ userId }: Props) {
           >
             <button
               type="button"
-              onClick={deleteCurrentFolder}
+              onClick={() => setDeleteFolderOpen(true)}
               disabled={!canDeleteFolder}
               aria-label="Delete folder"
               className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white p-2 text-slate-700 shadow-sm hover:bg-red-50 hover:border-red-300 hover:text-red-700 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-red-500/10 dark:hover:border-red-500/40 dark:hover:text-red-400"
@@ -213,7 +226,7 @@ export default function MyVideos({ userId }: Props) {
           </div>
           <button
             type="button"
-            onClick={createFolder}
+            onClick={() => setCreateFolderOpen(true)}
             className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
           >
             <FolderPlusIcon /> New folder
@@ -330,7 +343,7 @@ export default function MyVideos({ userId }: Props) {
                   });
                 }}
                 onMove={v.id ? () => setMoveTarget(v) : undefined}
-                onDelete={v.id ? () => deleteVideo(v) : undefined}
+                onDelete={v.id ? () => setDeleteVideoTarget(v) : undefined}
               />
             ))}
           </div>
@@ -378,6 +391,55 @@ export default function MyVideos({ userId }: Props) {
         />
       )}
 
+      <PromptDialog
+        open={createFolderOpen}
+        title="New folder"
+        label="Folder name"
+        placeholder="e.g. 2026/Switzerland"
+        confirmLabel="Create"
+        busy={createFolderBusy}
+        onClose={() => setCreateFolderOpen(false)}
+        onSubmit={submitCreateFolder}
+      />
+
+      <ConfirmDialog
+        open={deleteVideoTarget !== null}
+        title="Delete video"
+        message={
+          <>
+            Permanently delete{" "}
+            <strong className="font-semibold text-slate-900 dark:text-white">
+              {deleteVideoTarget?.name}
+            </strong>
+            ? This cannot be undone.
+          </>
+        }
+        confirmLabel="Delete"
+        variant="danger"
+        busy={deleteVideoBusy}
+        onClose={() => setDeleteVideoTarget(null)}
+        onConfirm={confirmDeleteVideo}
+      />
+
+      <ConfirmDialog
+        open={deleteFolderOpen}
+        title="Delete folder"
+        message={
+          <>
+            Delete empty folder{" "}
+            <strong className="font-semibold text-slate-900 dark:text-white">
+              {data?.parts[data.parts.length - 1] ?? path}
+            </strong>
+            ? It must be empty.
+          </>
+        }
+        confirmLabel="Delete"
+        variant="danger"
+        busy={deleteFolderBusy}
+        onClose={() => setDeleteFolderOpen(false)}
+        onConfirm={confirmDeleteFolder}
+      />
+
       {trashTooltipPos && (
         <div
           role="tooltip"
@@ -419,7 +481,7 @@ export default function MyVideos({ userId }: Props) {
             onClick={(e) => e.stopPropagation()}
           >
             <span className="mr-1 font-semibold text-slate-400">
-              S3 presigned (temporal url):
+              Cloudfront signed URL:
             </span>
             <span className="break-all font-mono">{previewUrl}</span>
           </div>
@@ -448,20 +510,7 @@ function VideoTile({
   const sizeMb = (video.size / (1024 * 1024)).toFixed(1);
   return (
     <article className="group/tile relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-brand-500/10 dark:border-slate-800 dark:bg-slate-900 dark:hover:shadow-orange-500/20">
-      {onDelete && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          aria-label={`Delete video ${video.name}`}
-          title="Delete video"
-          className="absolute right-2 top-2 z-10 rounded-full bg-slate-900/70 p-2 text-white opacity-0 shadow-lg backdrop-blur-sm transition hover:bg-red-600 group-hover/tile:opacity-100"
-        >
-          <BigTrashIcon />
-        </button>
-      )}
+      <div className="relative">
       <button
         type="button"
         onClick={onPlay}
@@ -496,6 +545,21 @@ function VideoTile({
           </span>
         )}
       </button>
+      {onDelete && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          aria-label={`Delete video ${video.name}`}
+          title="Delete video"
+          className="absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded-full bg-slate-900/70 p-2 text-white opacity-0 shadow-lg backdrop-blur-sm transition hover:bg-red-600 group-hover/tile:opacity-100"
+        >
+          <BigTrashIcon />
+        </button>
+      )}
+      </div>
 
       <div className="space-y-2 p-4">
         <div className="flex items-start justify-between gap-2">
